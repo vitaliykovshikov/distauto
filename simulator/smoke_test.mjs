@@ -1,0 +1,37 @@
+import assert from 'node:assert/strict';
+import create from '../dist/column.mjs';
+const module=await create();
+const wrap=(name,result,args=[])=>module.cwrap('sim_'+name,result,args);
+const init=wrap('init',null),step=wrap('step',null,['number']);
+const temp=wrap('temperature',null,['number']),sensor=wrap('sensor',null,['number']);
+const clear=wrap('clear_args',null),arg=wrap('arg',null,['string','string']);
+const request=wrap('request','number',['string','number']),response=wrap('response','string');
+const state=()=>JSON.parse(wrap('state','string')());
+function call(path,values={},method='POST'){
+ clear();for(const [key,value] of Object.entries(values))arg(key,String(value));
+ const code=request(path,method==='POST'?1:2),text=response();
+ return {code,text,json:()=>JSON.parse(text)};
+}
+init();step(1000);
+assert.equal(call('/status',{},'GET').json().mode,'IDLE');
+assert.equal(call('/auto/start').code,409);
+assert.equal(call('/plan',{},'GET').code,405);
+const p=call('/plan',{vol:10,abv:40,h:1,d:4,headsPct:10,tailsPct:15,strengthPct:96,decrementPct:10,reduceDt:.2});
+assert.equal(p.code,200);const plan=p.json();
+assert.equal(plan.aa,4000);assert.equal(plan.bodyMl,3125);
+assert.equal(call('/auto/start',{revision:plan.revision,headsRate:400,bodyRate:4000}).code,200);
+step(31*60000);assert.equal(state().phase,'HEADS');
+step(65*60000);assert.equal(state().phase,'STAB');assert.equal(state().valve,false);
+assert.ok(state().headsMl>=plan.headsMl && state().headsMl<plan.headsMl+2);
+call('/auto/swap');step(10*60000);assert.equal(state().phase,'BODY');
+temp(78.3);step(64000);assert.ok(Math.abs(state().factor-.9)<.0001);
+step(60000);assert.ok(Math.abs(state().factor-.81)<.0001);
+call('/stop',{on:1},'GET');step(30000);assert.equal(state().valve,false);
+call('/stop',{on:0},'GET');step(1000);
+call('/auto/end');step(2000);assert.equal(state().phase,'ABORT');assert.equal(state().valve,false);
+call('/auto/end');step(2000);assert.equal(call('/status',{},'GET').json().mode,'IDLE');assert.equal(state().valve,false);
+assert.equal(call('/calib/save',{sec:10,ml:25},'GET').code,200);
+assert.equal(call('/status',{},'GET').json().flow,2.5);
+sensor(0);step(7000);
+assert.equal(call('/auto/start',{revision:plan.revision,headsRate:400,bodyRate:4000}).code,400);
+console.log('WebAssembly: full warmup → heads → swap → body, repeated decrement, pause, stop, calibration, sensor failure: OK');

@@ -1,0 +1,13 @@
+<aside class="card sim-panel" aria-label="Керування симулятором">
+ <b>Симулятор колони</b>
+ <div class="sub">Той самий скетч у браузері. Датчик і клапан віртуальні.</div>
+ <div class="flow-fields">
+  <div><label for="simTemp">Температура датчика, °C</label><input id="simTemp" type="number" min="0" max="124" step="0.05" value="78"></div>
+  <div><label for="simSpeed">Швидкість часу</label><select id="simSpeed"><option value="0">Пауза часу</option><option value="1">×1</option><option value="10">×10</option><option value="60" selected>×60</option><option value="300">×300</option><option value="1000">×1000</option></select></div>
+ </div>
+ <label><input id="simSensor" type="checkbox" checked> Датчик підключено</label>
+ <div class="flow-fields"><button id="simMinute" class="gray">Додати 1 хв</button><button id="simTenMinutes" class="gray">Додати 10 хв</button></div>
+ <div class="flow-fields"><button id="simReset" class="gray">Почати симуляцію заново</button><a class="sim-download" href="ukrkraft_kolona_v1_1.ino" download>Завантажити скетч</a></div>
+ <div class="sub" id="simState" role="status">Завантаження симулятора…</div>
+ <div class="sub">Для проби: розрахуйте режим, запустіть авто і прискорте прогрів. Під час тіла підніміть температуру до 78,3 °C та простежте за декрементом. Перезапуск сторінки скидає симуляцію і налаштування.</div>
+</aside>
