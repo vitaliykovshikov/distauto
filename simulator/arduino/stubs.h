@@ -10,6 +10,7 @@
 using std::isfinite;
 using std::isnan;
 #define CONFIG_BT_ENABLED 1
+#define DISTAUTO_SIMULATOR 1
 #define CONFIG_BLUEDROID_ENABLED 1
 #define PROGMEM
 #define HIGH 1
@@ -36,6 +37,8 @@ class String {
   bool operator==(const String& v) const{return s==v.s;}
   bool operator!=(const String& v) const{return s!=v.s;}
   String operator+(const String& v) const{return String(s+v.s);}
+  String& operator+=(const String& v){s+=v.s;return *this;}
+  String& operator+=(char v){s+=v;return *this;}
 };
 inline uint32_t fakeNow=10000;
 inline float fakeTemperature=78.0f;
@@ -68,6 +71,7 @@ struct WebServer {
   String arg(const char* name){return args[name];}
   void send(int c,const char* type,String body){code=c;response=body;contentType=type;}
   void send_P(int c,const char* type,const char* body){send(c,type,body);}
+  void sendHeader(const char*,String){}
   void on(const char* path,void(*fn)()){routes[path]={HTTP_ANY,fn};}
   void on(const char* path,int method,void(*fn)()){routes[path]={method,fn};}
   void dispatch(const char* path,int method){
@@ -81,11 +85,15 @@ struct WebServer {
 struct Preferences {
   std::map<std::string,float> floats;
   std::map<std::string,unsigned long> longs;
+  std::map<std::string,String> strings;
   void begin(const char*,bool){}
   float getFloat(const char* key,float v){return floats.count(key)?floats[key]:v;}
   unsigned long getULong(const char* key,unsigned long v){return longs.count(key)?longs[key]:v;}
   void putFloat(const char* key,float v){floats[key]=v;}
   void putULong(const char* key,unsigned long v){longs[key]=v;}
+  String getString(const char* key,const char* fallback=""){return strings.count(key)?strings[key]:String(fallback);}
+  void putString(const char* key,String v){strings[key]=v;}
+  void remove(const char* key){strings.erase(key);floats.erase(key);longs.erase(key);}
 };
 struct WireStub {void begin(int,int){} void setClock(int){}} inline Wire;
 struct Adafruit_SSD1306 {

@@ -2,7 +2,7 @@
 (()=>{
  const el=id=>document.getElementById(id);
  const nativeFetch=window.fetch.bind(window);
- const endpoints=new Set(['/status','/stop','/manual','/set','/plan','/auto/start','/auto/swap','/auto/end','/calib/test','/calib/save']);
+ const endpoints=new Set(['/status','/stop','/manual','/set','/plan','/auto/start','/auto/swap','/auto/end','/calib/test','/calib/save','/features','/rates','/recipe/plan','/recipe/start','/recipe/rate','/manual/config','/manual/start','/presets','/preset/save','/preset/delete','/report','/report.csv','/history','/history/init','/history/download','/history/delete']);
  let api=null;
  const ready=import('./column.mjs').then(async({default:create})=>{
   const module=await create();
@@ -29,7 +29,7 @@
   const s=JSON.parse(api.state());
   const seconds=Math.floor(s.timeMs/1000);
   const clock=[Math.floor(seconds/3600),Math.floor(seconds/60)%60,seconds%60].map(v=>String(v).padStart(2,'0')).join(':');
-  el('simState').textContent=`Час ${clock} · Клапан ${s.valve?'ВІДКРИТИЙ':'ЗАКРИТИЙ'} · Швидкість ${s.rate.toFixed(0)} мл/год · Поточний етап: ${s.deliveredMl.toFixed(1)} мл`;
+  el('simState').textContent=`Час ${clock} · Клапан ${s.valve?'ВІДКРИТИЙ':'ЗАКРИТИЙ'} · Швидкість ${s.rate.toFixed(0)} мл/год · За погін: ${s.deliveredMl.toFixed(1)} мл`;
  }
  el('simTemp').addEventListener('input',()=>{
   const value=Number(el('simTemp').value);
@@ -37,7 +37,7 @@
  });
  el('simSensor').addEventListener('change',()=>{if(api)api.sensor(el('simSensor').checked?1:0);});
  async function advance(milliseconds){
-  const core=await ready;core.step(milliseconds);render();if(window.upd)await window.upd();
+  const core=await ready;core.step(milliseconds);render();if(window.upd)await window.upd();if(window.refreshReport)await window.refreshReport();
  }
  el('simMinute').addEventListener('click',()=>advance(60000));
  el('simTenMinutes').addEventListener('click',()=>advance(600000));

@@ -1,5 +1,5 @@
 // ==========================================
-// УКРКРАФТ | Версія: v1.1
+// УКРКРАФТ | Версія: v1.2
 // Автоматика ректифікації: ESP32 + DS18B20 + Реле (НВ клапан) + OLED + Bluetooth + OTA
 // Wi-Fi: мережа "Kolona" (пароль: 12345678) -> http://192.168.4.1
 // Bluetooth: "ESP32_Kolona"
@@ -46,7 +46,7 @@ const float MIN_RATE_FACTOR = 0.4f;
 
 // ---------- Типи ----------
 enum Mode  { M_IDLE, M_MANUAL, M_AUTO, M_CALIB };
-enum Phase { PH_NONE, PH_WARMUP, PH_HEADS, PH_STAB, PH_BODY, PH_DONE, PH_ABORT };
+enum Phase { PH_NONE, PH_WARMUP, PH_HEADS, PH_STAB, PH_BODY, PH_DONE, PH_ABORT, PH_SPIT, PH_DRIP, PH_STREAM, PH_TAILS };
 
 struct Plan {
   bool valid;
@@ -104,6 +104,13 @@ const int SBUF_N = 36;
 float sbuf[SBUF_N];
 int scount = 0, sidx = 0;
 unsigned long lastSample = 0;
+bool headsRecipe = false;
+void beginRun(const char* label);
+void endRun(const char* result);
+void accountRun(float ml);
+void recipeLoop(unsigned long now);
+void applyRecipePhase(Phase p);
+void logPhaseChange();
 
 // ---------- Керування реле (Active-LOW модуль + НВ клапан 220В) ----------
 // HIGH на IN -> реле вимкнене -> в розетці 0В -> НВ клапан ВІДКРИТИЙ
@@ -114,7 +121,9 @@ void valveOpen() {
 }
 void valveClose() {
   if (valveIsOpen) {
-    phaseDelivered += (millis() - openedAt) / 1000.0f * flowMlS;
+    float ml = (millis() - openedAt) / 1000.0f * flowMlS;
+    phaseDelivered += ml;
+    accountRun(ml);
     valveIsOpen = false;
   }
   digitalWrite(PIN_RELAY, LOW); 
@@ -136,6 +145,10 @@ const char* phaseName() {
     case PH_BODY:   return "BODY";
     case PH_DONE:   return "DONE";
     case PH_ABORT:  return "ABORT";
+    case PH_SPIT:   return "SPIT";
+    case PH_DRIP:   return "DRIP";
+    case PH_STREAM: return "STREAM";
+    case PH_TAILS:  return "TAILS";
     default:        return "NONE";
   }
 }
@@ -168,6 +181,8 @@ bool stableNow() {
   return (mx - mn) <= STAB_TOL && bufAvg() > 60.0f;
 }
 
+float estimatedBodyRate(float h,float d){return 300.0f*d*d*fminf(1.3f,fmaxf(.5f,h/1.2f));}
+float estimatedHeadsRate(float h,float d){return fminf(400.0f,fmaxf(40.0f,.1f*estimatedBodyRate(h,d)));}
 String makePlan(float vol, float abv, float h, float d, float headsPct,
                 float tailsPct, float strengthPct, float decrementPct, float reduceDt) {
   plan.valid = false;
@@ -189,9 +204,7 @@ String makePlan(float vol, float abv, float h, float d, float headsPct,
   plan.headsMl = plan.aaMl * headsPct / strengthPct;
   plan.bodyMl = plan.aaMl * (100.0f - headsPct - tailsPct) / strengthPct;
 
-  float hf = fminf(1.3f, fmaxf(0.5f, h / 1.2f));          
-  plan.bodyRate  = 300.0f * d * d * hf;                    
-  plan.headsRate = fminf(400.0f, fmaxf(40.0f, 0.1f * plan.bodyRate));
+  plan.bodyRate=estimatedBodyRate(h,d);plan.headsRate=estimatedHeadsRate(h,d);
   plan.warmMin  = 20.0f + 10.0f * h;
 
   plan.warn = "Швидкості та вихід орієнтовні. Скоригуйте швидкості під вашу колону. Вихід: голови + тіло; залишок АС не включено.";
@@ -227,9 +240,13 @@ void startPhase(Phase p) {
   if (p == PH_BODY)  { phaseRate = plan.bodyRate;  applyTiming(); }
   if (p == PH_STAB)  { clearBuf(); swapConfirmed = autoSwap; }
   if (p == PH_WARMUP) { clearBuf(); }
+  if (p == PH_SPIT || p == PH_DRIP || p == PH_STREAM) applyRecipePhase(p);
+  logPhaseChange();
 }
 
 void startAuto() {
+  valveClose();
+  beginRun(headsRecipe ? "2-3-15" : "Авто");
   idleValveClosed = true;
   manualStop = false;
   coolingBlock = false;
@@ -239,11 +256,14 @@ void startAuto() {
   totalBody = 0;
   mode = M_AUTO;
   startPhase(PH_WARMUP);
+  infoText[0]=0;
+  setStatus("АВТО: прогрів", "AUTO WARMUP");
 }
 
 void finishAuto() {
   valveClose();
-  totalBody = phaseDelivered;
+  if (!headsRecipe && phase == PH_BODY) totalBody = phaseDelivered;
+  endRun("completed");
   phase = PH_DONE;
   setStatus("АВТО: завершено", "AUTO DONE");
 }
@@ -251,17 +271,20 @@ void finishAuto() {
 void abortAuto(const String& reason) {
   valveClose();
   abortReason = reason;
+  endRun(reason.c_str());
   phase = PH_ABORT;
   setStatus(String("АВТО: ") + reason, "AUTO STOPPED");
 }
 
 void endToIdle() {
   valveClose();
+  endRun("зупинено вручну");
   idleValveClosed = true;
   mode = M_IDLE;
   phase = PH_NONE;
   manualStop = false;
   coolingBlock = false;
+  setStatus("ГОТОВО: очікування","IDLE");infoText[0]=0;
 }
 
 void runPulse(unsigned long period, unsigned long open) {
@@ -294,6 +317,7 @@ void autoLoop(unsigned long now) {
     return;
   }
   holdSince = 0;
+  if (headsRecipe && (phase == PH_SPIT || phase == PH_DRIP || phase == PH_STREAM)) { recipeLoop(now); return; }
   float elapsedMin = (now - phaseStart) / 60000.0f;
 
   switch (phase) {
@@ -302,7 +326,7 @@ void autoLoop(unsigned long now) {
       bool st = stableNow();
       setStatus("АВТО: прогрів", "AUTO WARMUP");
       snprintf(infoText, sizeof(infoText), "Прогрів: %.0f/%.0f хв. Стабільно: %s", elapsedMin, plan.warmMin, st ? "так" : "ні");
-      if (elapsedMin >= plan.warmMin && st) { tRef = bufAvg(); startPhase(PH_HEADS); }
+      if (elapsedMin >= plan.warmMin && st) { tRef = bufAvg(); startPhase(headsRecipe ? PH_SPIT : PH_HEADS); }
       break;
     }
     case PH_HEADS: {
@@ -356,187 +380,13 @@ void updateDisplay() {
   display.print("Valve: ");
   display.print(valveIsOpen ? "OPEN" : "CLOSED");
   display.setCursor(0, 56);
-  display.print("UKRKRAFT v1.1");
+  display.print("UKRKRAFT v1.2");
   display.display();
 }
 
-const char PAGE[] PROGMEM = R"HTML(
-<!DOCTYPE html><html lang="uk"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>УКРКРАФТ - Колона v1.1</title>
-<style>
-body{font-family:sans-serif;margin:0;padding:16px;background:#111;color:#eee}
-.card{background:#1e1e1e;border-radius:12px;padding:16px;margin-bottom:14px}
-.big{font-size:44px;font-weight:bold}
-.st{font-size:20px;margin-top:6px}
-.sub{font-size:15px;color:#aaa;margin-top:6px}
-label{display:block;margin-top:10px;font-size:14px;color:#aaa}
-input[type=number]{width:100%;box-sizing:border-box;padding:10px;font-size:18px;border-radius:8px;border:1px solid #444;background:#111;color:#eee}
-.flow-fields{display:flex;gap:12px}
-.flow-fields>div{flex:1;min-width:0}
-button{width:100%;padding:14px;margin-top:14px;font-size:18px;border:0;border-radius:10px;color:#fff;background:#2a6fdb}
-button.red{background:#c0392b}
-button.green{background:#27ae60}
-button.gray{background:#555}
-#plan{white-space:pre-line;margin-top:12px;font-size:15px}
-.msg{margin-top:10px;min-height:20px}
-</style></head><body>
-<div class="card">
- <div style="text-align:right;font-size:12px;color:#888">УКРКРАФТ v1.1</div>
- <div class="big"><span id="t">--</span> °C</div>
- <div class="st" id="s">...</div>
- <div class="sub" id="info"></div>
- <button id="pause" class="red" onclick="togglePause()" style="display:none">Пауза</button>
- <button id="swap" onclick="doSwap()" style="display:none">Ємність замінено, продовжити</button>
- <button id="end" class="red" onclick="endAuto()" style="display:none">Зупинити авто</button>
-</div>
-<div class="card" id="autoForm">
- <b>Авто ректифікація (УКРКРАФТ)</b>
- <label>Об'єм сирцю, л</label><input id="vol" type="number" step="0.1" value="10">
- <label>Міцність сирцю, %</label><input id="abv" type="number" step="0.1" value="40">
- <label>Висота колони, м</label><input id="hh" type="number" min="0.3" max="4" step="0.01" value="1">
- <label>Діаметр колони, дюйми</label><input id="dd" type="number" min="0.5" max="6" step="0.1" value="4">
- <label>Голови, % від абсолютного спирту</label><input id="headsPct" type="number" min="0.1" max="30" step="0.1" value="10">
- <label>Декремент: зростання температури від початку тіла, °C</label><input id="reduceDt" type="number" min="0.05" max="2" step="0.05" value="0.20">
- <label>Декремент: зменшення поточної швидкості, %</label><input id="decrementPct" type="number" min="1" max="50" step="1" value="10">
- <div class="sub">При перевищенні порога протягом 60 с швидкість знижується. Якщо температура залишається підвищеною — повтор кожні 60 с, до 40% початкової швидкості. Завершення — за розрахованим об’ємом тіла або вручну.</div>
- <details><summary>Припущення для розрахунку виходу</summary>
-  <label>Очікувана міцність голів і тіла, % об.</label><input id="strengthPct" type="number" min="80" max="96.6" step="0.1" value="96">
-  <label>АС, що залишається у хвостах та втратах, % від початкового АС</label><input id="tailsPct" type="number" min="0" max="50" step="0.1" value="15">
- </details>
- <button onclick="calc()">Розрахувати режим</button>
- <div id="plan"></div>
- <div id="rates" style="display:none">
-  <label>Швидкість відбору голів, мл/год</label><input id="headsRate" type="number" min="0.1" step="0.01">
-  <label>Початкова швидкість відбору тіла, мл/год</label><input id="bodyRate" type="number" min="0.1" step="0.01">
-  <div class="sub" id="planWarn"></div>
- </div>
- <button id="startAuto" style="display:none" onclick="startAuto()">Запустити авто</button>
-</div>
-<div class="card">
- <b>Ручний режим і налаштування</b>
- <button id="manBtn" onclick="toggleManual()">Запустити ручний відбір</button>
- <label>Аварійна температура, °C</label><input id="talarm" type="number" step="0.1">
- <div class="flow-fields">
-  <div><label for="flow">Витрата клапана (мл/с)</label><input id="flow" type="number" step="0.01" oninput="updateFlowHour()"></div>
-  <div><label for="flowHour">Витрата (мл/год)</label><input id="flowHour" type="number" step="0.01" readonly></div>
- </div>
- <label>Ручний: уставка, °C</label><input id="tset" type="number" step="0.1">
- <label>Ручний: гістерезис, °C</label><input id="thyst" type="number" step="0.1">
- <label>Ручний: період, с</label><input id="per" type="number" step="0.1">
- <label>Ручний: час відкриття, с</label><input id="opn" type="number" step="0.1">
- <button onclick="save()">Зберегти</button>
- <div class="msg" id="msg"></div>
-</div>
-<div class="card">
- <b>Калібрування клапана</b>
- <label>Час тесту відкриття (секунд)</label><input id="calSec" type="number" value="10">
- <label>Вилито рідини у мірний посуд (мл)</label><input id="calMl" type="number" value="50">
- <button class="green" onclick="runCalibTest()">1. Відкрити клапан на тестовий час</button>
- <button onclick="saveCalib()">2. Зберегти калібрування (мл/с)</button>
- <div class="msg" id="calMsg"></div>
-</div>
-<script>
-const $=id=>document.getElementById(id);
-const show=(id,v)=>$(id).style.display=v?'block':'none';
-let filled=false,stopped=false,mode='IDLE',phase='NONE';
-let planRevision=null,calcGeneration=0;
-const planInputs=['vol','abv','hh','dd','headsPct','tailsPct','strengthPct','decrementPct','reduceDt'];
-function invalidatePlan(){planRevision=null;calcGeneration++;show('startAuto',false);show('rates',false);$('plan').textContent='Параметри змінено. Розрахуйте режим.';}
-planInputs.forEach(id=>$(id).addEventListener('input',invalidatePlan));
-function updateFlowHour(){
- const value=$('flow').value;
- const flow=Number(value);
- $('flowHour').value=value.trim()!==''&&Number.isFinite(flow)?(flow*3600).toFixed(2):'';
-}
-async function upd(){
- try{
-  const d=await(await fetch('/status')).json();
-  mode=d.mode;phase=d.phase;stopped=d.manualStop;
-  $('t').textContent=d.temp===null?'--':d.temp.toFixed(2);
-  $('s').textContent=d.status;
-  $('info').textContent=d.info;
-  const fin=(phase==='DONE'||phase==='ABORT');
-  show('pause',mode!=='IDLE'&&!fin);
-  $('pause').textContent=stopped?'Продовжити':'Пауза';
-  show('swap',d.needSwap);
-  show('end',mode==='AUTO');
-  $('end').textContent=fin?'Повернутися до налаштувань':'Зупинити авто (закрити клапан)';
-  show('autoForm',mode==='IDLE');
-  show('manBtn',mode!=='AUTO');
-  $('manBtn').textContent=mode==='MANUAL'?'Зупинити ручний відбір':'Запустити ручний відбір';
-  if(!filled){
-   $('tset').value=d.tSet;$('thyst').value=d.tHyst;$('talarm').value=d.tAlarm;
-   $('per').value=d.period;$('opn').value=d.open;$('flow').value=d.flow;
-   updateFlowHour();
-   filled=true;
-  }
- }catch(e){}
-}
-async function togglePause(){await fetch('/stop?on='+(stopped?0:1));upd();}
-async function doSwap(){
- try{const r=await fetch('/auto/swap',{method:'POST'});if(!r.ok){$('info').textContent=await r.text();return;}await upd();}
- catch(e){$('info').textContent='Помилка зв’язку. Заміну ємності не підтверджено.';}
-}
-async function endAuto(){
- try{const r=await fetch('/auto/end',{method:'POST'});if(!r.ok){$('info').textContent=await r.text();return;}invalidatePlan();await upd();}
- catch(e){$('info').textContent='Помилка зв’язку. Зупинку не підтверджено.';}
-}
-async function toggleManual(){await fetch('/manual?on='+(mode==='MANUAL'?0:1));upd();}
-async function calc(){
- invalidatePlan();
- const generation=calcGeneration;
- $('plan').textContent='Розрахунок…';
- const p=new URLSearchParams({vol:$('vol').value,abv:$('abv').value,h:$('hh').value,d:$('dd').value,
-  headsPct:$('headsPct').value,tailsPct:$('tailsPct').value,strengthPct:$('strengthPct').value,
-  decrementPct:$('decrementPct').value,reduceDt:$('reduceDt').value});
- try{
- const r=await fetch('/plan',{method:'POST',body:p});
- if(!r.ok){const message=await r.text();if(generation===calcGeneration)$('plan').textContent=message;return;}
- const d=await r.json();
- if(generation!==calcGeneration)return;
- planRevision=d.revision;
- $('plan').textContent='Абсолютний спирт: '+d.aa.toFixed(2)+' мл ('+(d.aa/1000).toFixed(3)+' л)\n'+
-  'Кількість голів: '+d.headsMl.toFixed(2)+' мл\nКількість тіла: '+d.bodyMl.toFixed(2)+' мл\n'+
-  'Розрахунковий вихід (голови + тіло): '+(d.yieldMl/1000).toFixed(3)+' л при '+d.strengthPct+'%';
- $('headsRate').value=d.headsRate;$('bodyRate').value=d.bodyRate;
- $('planWarn').textContent=d.warn;
- show('rates',true);
- show('startAuto',true);
- }catch(e){if(generation===calcGeneration)$('plan').textContent='Помилка зв’язку. Повторіть розрахунок.';}
-}
-async function startAuto(){
- if(planRevision===null)return;
- const p=new URLSearchParams({revision:planRevision,headsRate:$('headsRate').value,bodyRate:$('bodyRate').value});
- $('startAuto').disabled=true;
- try{
-  const r=await fetch('/auto/start',{method:'POST',body:p});
-  if(!r.ok){$('planWarn').textContent=await r.text();return;}
-  invalidatePlan();await upd();
- }catch(e){$('planWarn').textContent='Помилка зв’язку. Перевірте стан процесу.';}
- finally{$('startAuto').disabled=false;}
-}
-async function save(){
- const p=new URLSearchParams({tset:$('tset').value,thyst:$('thyst').value,talarm:$('talarm').value,
-  per:$('per').value,opn:$('opn').value,flow:$('flow').value});
- const r=await fetch('/set',{method:'POST',body:p});
- $('msg').textContent=await r.text();
-}
-async function runCalibTest(){
- const sec=$('calSec').value;
- const r=await fetch('/calib/test?sec='+sec);
- $('calMsg').textContent=await r.text();
-}
-async function saveCalib(){
- const sec=$('calSec').value, ml=$('calMl').value;
- const r=await fetch('/calib/save?sec='+sec+'&ml='+ml);
- $('calMsg').textContent=await r.text();
- if(r.ok){$('flow').value=Number(ml)/Number(sec);updateFlowHour();}
- upd();
-}
-upd();setInterval(upd,2000);
-</script></body></html>
-)HTML";
+#include "RunFeatures.h"
+
+#include "WebPage.h"
 
 float argF(const char* n) {
   String s = server.arg(n);
@@ -559,10 +409,10 @@ void handleStatus() {
   const char* modeS = (mode == M_IDLE) ? "IDLE" : (mode == M_MANUAL ? "MANUAL" : (mode == M_AUTO ? "AUTO" : "CALIB"));
   bool needSwap = (mode == M_AUTO && phase == PH_STAB && !swapConfirmed);
   snprintf(buf, sizeof(buf),
-    R"JSON({"temp":%s,"status":"%s","info":"%s","mode":"%s","phase":"%s","valve":%s,"manualStop":%s,"needSwap":%s,"planValid":%s,"tRef":%s,"tSet":%.1f,"tHyst":%.1f,"tAlarm":%.1f,"period":%.1f,"open":%.1f,"flow":%.4f})JSON",
+    R"JSON({"temp":%s,"status":"%s","info":"%s","mode":"%s","phase":"%s","valve":%s,"manualStop":%s,"needSwap":%s,"planValid":%s,"tRef":%s,"tSet":%.1f,"tHyst":%.1f,"tAlarm":%.1f,"period":%.1f,"open":%.1f,"flow":%.4f,"recipe":%s,"manualProfile":%d,"rate":%.2f})JSON",
     tbuf, statusText.c_str(), infoText, modeS, phaseName(),
     b(valveIsOpen), b(manualStop), b(needSwap), b(plan.valid), rbuf,
-    tSet, tHyst, tAlarm, periodMs / 1000.0, openMs / 1000.0, flowMlS);
+    tSet, tHyst, tAlarm, periodMs / 1000.0, openMs / 1000.0, flowMlS,b(headsRecipe),manualProfile,currentRate());
   server.send(200, "application/json; charset=utf-8", buf);
 }
 
@@ -575,7 +425,7 @@ void handleStop() {
 void handleManual() {
   bool on = server.arg("on") == "1";
   if (on && mode == M_IDLE) {
-    mode = M_MANUAL; coolingBlock = false; manualStop = false; cycleStart = millis();
+    startManualProfile(manualProfile);return;
   } else if (!on && mode == M_MANUAL) {
     endToIdle();
   }
@@ -583,7 +433,7 @@ void handleManual() {
 }
 
 void handleSet() {
-  if (mode == M_AUTO) { server.send(400, "text/plain", "Недоступно під час авто"); return; }
+  if (mode != M_IDLE) { server.send(400, "text/plain", "Недоступно під час відбору"); return; }
   float ts = argF("tset"), th = argF("thyst"), ta = argF("talarm");
   float per = argF("per"), op = argF("opn"), flow = argF("flow");
   if (!isfinite(ts) || !isfinite(th) || !isfinite(ta) || !isfinite(per) || !isfinite(op) || !isfinite(flow) ||
@@ -610,6 +460,7 @@ void handlePlan() {
   String err = makePlan(argF("vol"), argF("abv"), argF("h"), argF("d"),
     argF("headsPct"), argF("tailsPct"), argF("strengthPct"), argF("decrementPct"), argF("reduceDt"));
   if (err.length()) { server.send(400, "text/plain", err); return; }
+  headsRecipe = false;
   char buf[1400];
   snprintf(buf, sizeof(buf),
     R"JSON({"revision":%lu,"aa":%.2f,"headsMl":%.2f,"bodyMl":%.2f,"headsRate":%.2f,"bodyRate":%.2f,"yieldMl":%.2f,"strengthPct":%.2f,"warn":"%s"})JSON",
@@ -619,7 +470,7 @@ void handlePlan() {
 }
 
 void handleAutoStart() {
-  if (mode != M_IDLE || !plan.valid) { server.send(409, "text/plain; charset=utf-8", "Спочатку розрахуйте режим у стані очікування"); return; }
+  if (mode != M_IDLE || !plan.valid || headsRecipe) { server.send(409, "text/plain; charset=utf-8", "Спочатку розрахуйте режим у стані очікування"); return; }
   if (server.arg("revision") != String(plan.revision)) { server.send(409, "text/plain; charset=utf-8", "Розрахунок змінився. Розрахуйте повторно"); return; }
   float headsRate = argF("headsRate"), bodyRate = argF("bodyRate");
   float minRate = flowMlS * 0.2f / MIN_RATE_FACTOR;
@@ -644,8 +495,9 @@ void handleAutoEnd() {
 
 void handleCalibTest() {
   if (mode != M_IDLE) { server.send(409, "text/plain", "IDLE only"); return; }
-  int sec = server.arg("sec").toInt();
-  if (sec < 1) sec = 10;
+  float requested=argF("sec");
+  if(!isfinite(requested)||requested<1||requested>60||floorf(requested)!=requested){server.send(400,"text/plain","Use 1..60 seconds");return;}
+  int sec=(int)requested;
   mode = M_CALIB;
   valveOpen();
   delay(sec * 1000UL);
@@ -700,6 +552,7 @@ void setup() {
   periodMs = prefs.getULong("period", periodMs);
   openMs   = prefs.getULong("open", openMs);
   flowMlS  = prefs.getFloat("flow", flowMlS);
+  initRunFeatures();
 
   Wire.begin(PIN_SDA, PIN_SCL);
   Wire.setClock(400000);
@@ -738,6 +591,7 @@ void loop() {
   readTemperature();
   unsigned long now = millis();
   sampleBuf(now);
+  recordRunSample(now);
   updateDisplay();
 
   static unsigned long lastBt = 0;
@@ -761,6 +615,7 @@ void loop() {
   if (!sensorOk) {
     valveClose();
     if (mode == M_AUTO) abortAuto("помилка датчика");
+    else { endRun("помилка датчика");mode=M_IDLE;idleValveClosed=true; }
     setStatus("ПОМИЛКА ДАТЧИКА", "SENSOR ERROR");
     return;
   }
@@ -768,6 +623,7 @@ void loop() {
   if (temperature >= tAlarm) {
     valveClose();
     if (mode == M_AUTO) abortAuto("перегрів");
+    else {endRun("перегрів");mode=M_IDLE;idleValveClosed=true;}
     return;
   }
 
@@ -778,11 +634,14 @@ void loop() {
 
   if (temperature > tSet + tHyst) coolingBlock = true;
   else if (temperature < tSet - tHyst) coolingBlock = false;
+  snprintf(infoText,sizeof(infoText),"%s: %.1f мл; %.0f мл/год; уставка %.2f C",manualNames[manualProfile],deliveredNow(),manualProfiles[manualProfile].rate,tSet);
 
   if (manualStop || coolingBlock) {
     valveClose();
+    setStatus(manualStop?"РУЧНИЙ: пауза":"РУЧНИЙ: температурна блокировка","MANUAL HOLD");
     return;
   }
   
-  runPulse(periodMs, openMs);
+  setStatus(String("РУЧНИЙ: ")+manualNames[manualProfile],"MANUAL");
+  if(manualProfiles[manualProfile].rate>0)runPulse(autoPeriod,autoOpen);else valveClose();
 }

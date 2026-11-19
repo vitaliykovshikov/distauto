@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
 HEADERS = ("WiFi", "WebServer", "ElegantOTA", "Preferences", "OneWire", "DallasTemperature",
@@ -14,12 +15,12 @@ HEADERS = ("WiFi", "WebServer", "ElegantOTA", "Preferences", "OneWire", "DallasT
 def build(output: Path, emxx: str):
     output.mkdir(parents=True, exist_ok=True)
     sketch = ROOT / "ukrkraft_kolona_v1_1/ukrkraft_kolona_v1_1.ino"
-    sources = [sketch, Path(__file__), ROOT / "simulator/core.cpp", ROOT / "simulator/arduino/stubs.h",
+    sources = [sketch, *sorted(sketch.parent.glob("*.h")), Path(__file__), ROOT / "simulator/core.cpp", ROOT / "simulator/arduino/stubs.h",
                ROOT / "simulator/bridge.js", ROOT / "simulator/panel.html"]
     version = hashlib.sha256(b"\0".join(path.read_bytes() for path in sources)).hexdigest()[:16]
     module_name = f"column-{version}.mjs"
     bridge_name = f"bridge-{version}.js"
-    html = re.search(r'R"HTML\((.*?)\)HTML"', sketch.read_text(), re.S).group(1)
+    html = re.search(r'R"HTML\((.*?)\)HTML"', (sketch.parent / "WebPage.h").read_text(), re.S).group(1)
     panel = (ROOT / "simulator/panel.html").read_text()
     css = "\n.sim-panel{border:1px solid #396fa6}.sim-panel select{width:100%;padding:10px;font-size:18px;border-radius:8px;background:#111;color:#eee;border:1px solid #444;box-sizing:border-box}.sim-download{flex:1;display:flex;align-items:center;justify-content:center;color:#9ac6ff;margin-top:14px;padding:10px;text-align:center}button:disabled{opacity:.5}\n"
     html = html.replace("</style>", css + "</style>")
@@ -33,6 +34,9 @@ def build(output: Path, emxx: str):
     # Stable import for the Node.js smoke test; the browser uses only versioned assets.
     (output / "column.mjs").write_text(f"export {{default}} from './{module_name}';\n")
     shutil.copy2(sketch, output / sketch.name)
+    with zipfile.ZipFile(output / "distauto-firmware.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+        for source in [sketch, *sorted(sketch.parent.glob("*.h")), sketch.parent / "README.md"]:
+            archive.write(source, f"{sketch.parent.name}/{source.name}")
     with tempfile.TemporaryDirectory(prefix="distauto-headers-") as directory:
         headers = Path(directory)
         for name in HEADERS:

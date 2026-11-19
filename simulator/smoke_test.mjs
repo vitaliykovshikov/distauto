@@ -36,3 +36,37 @@ assert.equal(call('/status',{},'GET').json().flow,2.5);
 sensor(0);step(7000);
 assert.equal(call('/auto/start',{revision:plan.revision,headsRate:400,bodyRate:4000}).code,400);
 console.log('WebAssembly: full warmup → heads → swap → body, repeated decrement, pause, stop, calibration, sensor failure: OK');
+
+// A fresh instance exercises the same sketch's new modes without carrying the previous run.
+const fresh=await create();
+const fn=(name,result,args=[])=>fresh.cwrap('sim_'+name,result,args);
+const fstep=fn('step',null,['number']),fclear=fn('clear_args',null),farg=fn('arg',null,['string','string']);
+const freq=fn('request','number',['string','number']),fresponse=fn('response','string');
+function featureCall(path,values={},method='POST'){
+ fclear();for(const [key,value] of Object.entries(values))farg(key,String(value));
+ const code=freq(path,method==='POST'?1:2),text=fresponse();return {code,text,json:()=>JSON.parse(text)};
+}
+fn('init',null)();fstep(1000);
+assert.equal(featureCall('/features',{},'GET').json().simulator,true);
+const rp=featureCall('/recipe/plan',{vol:10,abv:40,h:1,d:4,strengthPct:96,pct:3,spit:18000,drip:400,stream:800});
+assert.equal(rp.code,200);assert.equal(rp.json().totalPct,8);assert.equal(rp.json().targetsMl[2],125);
+assert.equal(featureCall('/recipe/start',{revision:rp.json().revision,date:'2026-11-19T18:00:00.000Z',label:'Тест 2–3–15'}).code,200);
+fstep(30*60000);assert.equal(featureCall('/status',{},'GET').json().phase,'SPIT');
+featureCall('/recipe/rate',{stage:0,rate:0});fstep(3000);assert.equal(featureCall('/status',{},'GET').json().valve,false);
+featureCall('/recipe/rate',{stage:0,rate:18000});fstep(20000);assert.equal(featureCall('/status',{},'GET').json().phase,'DRIP');
+featureCall('/recipe/rate',{stage:1,rate:800});fstep(10*60000);assert.equal(featureCall('/status',{},'GET').json().phase,'STREAM');
+fstep(10*60000);assert.equal(featureCall('/status',{},'GET').json().phase,'DONE');
+const report=featureCall('/report',{},'GET').json();
+assert.equal(report.meta.kind,'recipe');assert.equal(report.meta.startedAt,'2026-11-19T18:00:00.000Z');
+assert.equal(report.summary.active,false);assert.ok(report.summary.deliveredMl>=333.33&&report.summary.deliveredMl<335);
+assert.ok(report.samples.length>0&&report.samples.length<=600);assert.ok(featureCall('/report.csv',{},'GET').text.includes('#summary,'));
+assert.deepEqual(featureCall('/history',{},'GET').json(),[]);
+featureCall('/auto/end');
+featureCall('/manual/config',{profile:0,set:78.3,hyst:.3,rate:500});featureCall('/manual/config',{profile:1,set:78.3,hyst:.3,rate:2000});
+featureCall('/manual/start',{profile:0,date:'2026-11-19T19:00:00.000Z'});fstep(20000);
+const mid=featureCall('/report',{},'GET').json();featureCall('/manual/start',{profile:1});fstep(20000);
+const switched=featureCall('/report',{},'GET').json();assert.equal(mid.meta.id,switched.meta.id);assert.ok(switched.summary.volumesMl[3]>0);
+featureCall('/manual',{on:0},'GET');assert.equal(featureCall('/report',{},'GET').json().summary.active,false);
+featureCall('/preset/save',{name:'Мій режим',kind:'recipe',config:'vol=10&abv=40&recipePct=3'});
+assert.equal(featureCall('/presets',{},'GET').json()[0].name,'Мій режим');
+console.log('WebAssembly: 2–3–3 boundary, three staged volumes, live sliders, manual profile switching, dated report, CSV and named presets: OK');

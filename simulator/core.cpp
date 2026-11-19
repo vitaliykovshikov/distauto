@@ -15,7 +15,7 @@ EXPORT void sim_sensor(int connected){fakeSensorConnected=connected!=0;}
 EXPORT void sim_step(unsigned int milliseconds){
   // Small steps preserve pulse widths, samples and all timers at accelerated speed.
   while(milliseconds){
-    unsigned int step=std::min(milliseconds,50u);
+    unsigned int step=std::min(milliseconds,5u);
     fakeNow+=step;milliseconds-=step;loop();
   }
 }
@@ -32,8 +32,7 @@ EXPORT const char* sim_state(){
   static char buf[400];
   snprintf(buf,sizeof(buf),R"JSON({"timeMs":%lu,"valve":%s,"phase":"%s","deliveredMl":%.2f,"rate":%.2f,"factor":%.4f,"headsMl":%.2f,"bodyMl":%.2f})JSON",
     millis(),b(valveIsOpen),phaseName(),
-    (mode==M_AUTO && (phase==PH_HEADS || phase==PH_BODY || phase==PH_DONE || phase==PH_ABORT))?deliveredNow():0.0f,
-    (mode==M_AUTO && (phase==PH_HEADS || phase==PH_BODY) && !manualStop)?phaseRate*rateFactor:0.0f,
+    run.exists?liveRunMl():0.0f,currentRate(),
     rateFactor,totalHeads,totalBody);
   return buf;
 }

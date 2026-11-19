@@ -2,8 +2,8 @@
 
 ESP32-скетч та браузерний стенд із тим самим інтерфейсом і тим самим C++-алгоритмом.
 
-- **Для ESP32:** відкрити `ukrkraft_kolona_v1_1/ukrkraft_kolona_v1_1.ino` в Arduino IDE. Потрібні Arduino core для ESP32, ElegantOTA, OneWire, DallasTemperature, Adafruit GFX та Adafruit SSD1306. Використовується плата з Bluetooth Classic, як у вихідному скетчі.
-- **Симулятор:** сторінка `PAGE` автоматично витягується зі скетчу. Повний `.ino` компілюється в WebAssembly через Emscripten 4.0.20. Додатковий JavaScript замінює тільки HTTP-транспорт і додає керування віртуальним датчиком та часом; формули й алгоритм не дублюються.
+- **Для ESP32:** завантажити ZIP прошивки зі стенда, розпакувати всю папку `ukrkraft_kolona_v1_1` і відкрити `.ino` в Arduino IDE. Файли `RunFeatures.h` і `WebPage.h` мають залишатися поряд. Потрібні Arduino core для ESP32, ElegantOTA, OneWire, DallasTemperature, Adafruit GFX та Adafruit SSD1306. Використовується плата з Bluetooth Classic, як у вихідному скетчі.
+- **Симулятор:** спільна сторінка `PAGE` витягується з `WebPage.h`. Повний скетч компілюється в WebAssembly через Emscripten 4.0.20. Додатковий JavaScript замінює тільки HTTP-транспорт і додає керування віртуальним датчиком та часом; формули й алгоритм не дублюються. Історія погонів у файловій пам’яті в емуляторі вимкнена, доступний поточний звіт і CSV. Власні режими можна зберігати в браузері.
 - **Розрахунок і перебіг процесу:** [опис прошивки](ukrkraft_kolona_v1_1/README.md).
 
 ## Перевірка на Mac
@@ -35,7 +35,8 @@ Workflow `.github/workflows/pages.yml` при кожному push у `main`:
 1. Перевіряє скетч на комп’ютері та JavaScript вебінтерфейсу.
 2. Збирає повний скетч у WebAssembly та витягує HTML.
 3. Перевіряє весь цикл від прогріву до тіла, декремент і зупинку вже у WebAssembly.
-4. Публікує тільки `dist/` у Pages після успішних перевірок.
+4. Окремо компілює справжню прошивку ESP32 з LittleFS та OTA, використовуючи перевірені версії інструментів.
+5. Публікує тільки `dist/` у Pages після успіху обох збірок. Імена браузерних файлів містять хеш версії для захисту від змішування кешованих збірок.
 
 Pull request запускає перевірки та збірку без публікації. Для повторного запуску доступний **Actions → Test and deploy simulator → Run workflow**.
 
@@ -45,6 +46,8 @@ Pull request запускає перевірки та збірку без пуб
 
 ```text
 ukrkraft_kolona_v1_1/ukrkraft_kolona_v1_1.ino  — джерело прошивки й інтерфейсу
+ukrkraft_kolona_v1_1/RunFeatures.h             — режими, звіти, профілі, LittleFS
+ukrkraft_kolona_v1_1/WebPage.h                 — спільний вебінтерфейс ESP32 і стенда
 ukrkraft_kolona_v1_1/tests/                    — перевірки на комп’ютері
 simulator/core.cpp                            — обгортка скетчу для WebAssembly
 simulator/arduino/                             — імітація апаратних бібліотек
