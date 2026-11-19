@@ -14,6 +14,7 @@ function call(path,values={},method='POST'){
 }
 init();step(1000);
 assert.equal(call('/status',{},'GET').json().mode,'IDLE');
+assert.equal(state().deliveredMl,0);
 assert.equal(call('/auto/start').code,409);
 assert.equal(call('/plan',{},'GET').code,405);
 const p=call('/plan',{vol:10,abv:40,h:1,d:4,headsPct:10,tailsPct:15,strengthPct:96,decrementPct:10,reduceDt:.2});
