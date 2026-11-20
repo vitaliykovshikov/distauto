@@ -2,7 +2,7 @@
 (()=>{
  const el=id=>document.getElementById(id);
  const nativeFetch=window.fetch.bind(window);
- const endpoints=new Set(['/status','/stop','/manual','/set','/plan','/auto/start','/auto/swap','/auto/end','/calib/test','/calib/save','/features','/rates','/recipe/plan','/recipe/start','/recipe/rate','/manual/config','/manual/start','/stage/end','/stage/choice','/presets','/preset/save','/preset/delete','/report','/report.csv','/history','/history/init','/history/download','/history/delete']);
+ const endpoints=new Set(['/status','/stop','/manual','/set','/plan','/auto/start','/auto/swap','/auto/end','/calib/test','/calib/save','/simple/config','/simple/start','/simple/end','/features','/rates','/recipe/plan','/recipe/start','/recipe/rate','/manual/config','/manual/start','/stage/end','/stage/choice','/presets','/preset/save','/preset/delete','/report','/report.csv','/history','/history/init','/history/download','/history/delete']);
  let api=null;
  const ready=import('./column.mjs').then(async({default:create})=>{
   const module=await create();

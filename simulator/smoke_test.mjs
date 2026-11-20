@@ -79,3 +79,23 @@ featureCall('/manual',{on:0},'GET');assert.equal(featureCall('/report',{},'GET')
 featureCall('/preset/save',{name:'Мій режим',kind:'recipe',config:'vol=10&abv=40&recipePct=3'});
 assert.equal(featureCall('/presets',{},'GET').json()[0].name,'Мій режим');
 console.log('WebAssembly: 4000 range, staged confirmation, recipe heads → manual body/tails, one dated report, CSV and named presets: OK');
+
+// Volume-driven manual transitions and both simple modes use the compiled production controller.
+const ftemp=fn('temperature',null,['number']);
+for(let i=0;i<3;i++)assert.equal(featureCall('/manual/config',{profile:i,set:78.5,hyst:.1,rate:4000,target:5,automatic:i?1:0}).code,200);
+featureCall('/manual/start',{profile:0,date:'2026-11-20T08:00:00.000Z'});fstep(10000);
+let volumeStop=featureCall('/status',{},'GET').json();assert.equal(volumeStop.stageAwaiting,true);assert.equal(volumeStop.valve,false);
+decide('continue');fstep(10000);assert.equal(featureCall('/status',{},'GET').json().stageAwaiting,false);
+featureCall('/stage/end');decide('next');fstep(20000);
+assert.equal(featureCall('/report',{},'GET').json().summary.result,'completed');
+featureCall('/simple/config',{kind:'startstop',close:78.5,open:78.2,rate:2000,decrement:10,reduce:1});
+assert.equal(featureCall('/simple/start',{kind:'startstop',date:'2026-11-20T09:00:00.000Z'}).code,200);fstep(10000);
+ftemp(78.5);fstep(2000);assert.equal(featureCall('/status',{},'GET').json().valve,false);
+ftemp(78.2);fstep(2000);assert.equal(featureCall('/status',{},'GET').json().rate,1800);
+featureCall('/simple/end');featureCall('/simple/config',{kind:'ss',close:79,rate:3000});featureCall('/simple/start',{kind:'ss'});fstep(10000);
+ftemp(79);fstep(2000);assert.equal(featureCall('/status',{},'GET').json().manualStop,true);
+assert.equal(featureCall('/stop',{on:0},'GET').code,400);
+ftemp(78);fstep(20000);assert.equal(featureCall('/status',{},'GET').json().manualStop,true);
+assert.equal(featureCall('/stop',{on:0},'GET').code,200);fstep(1000);assert.equal(featureCall('/status',{},'GET').json().rate,3000);
+assert.equal(featureCall('/report',{},'GET').json().meta.kind,'ss');featureCall('/simple/end');
+console.log('WebAssembly: manual volume stop/continuation/automatic transitions, start-stop decrement and SS manual resume: OK');

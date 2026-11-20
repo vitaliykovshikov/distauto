@@ -1,5 +1,5 @@
 // ==========================================
-// УКРКРАФТ | Версія: v1.3
+// УКРКРАФТ | Версія: v1.4
 // Автоматика ректифікації: ESP32 + DS18B20 + Реле (НВ клапан) + OLED + Bluetooth + OTA
 // Wi-Fi: мережа "Kolona" (пароль: 12345678) -> http://192.168.4.1
 // Bluetooth: "ESP32_Kolona"
@@ -45,7 +45,7 @@ const unsigned long REDUCE_HOLD_MS = 60000UL;
 const float MIN_RATE_FACTOR = 0.4f;
 
 // ---------- Типи ----------
-enum Mode  { M_IDLE, M_MANUAL, M_AUTO, M_CALIB };
+enum Mode  { M_IDLE, M_MANUAL, M_AUTO, M_CALIB, M_STARTSTOP, M_SS };
 enum Phase { PH_NONE, PH_WARMUP, PH_HEADS, PH_STAB, PH_BODY, PH_DONE, PH_ABORT, PH_SPIT, PH_DRIP, PH_STREAM, PH_TAILS };
 
 struct Plan {
@@ -217,6 +217,7 @@ String makePlan(float vol, float abv, float h, float d, float headsPct,
 
 void applyTiming() {
   float rate = phaseRate * rateFactor;                 
+  if(!isfinite(rate)||rate<=0||!isfinite(flowMlS)||flowMlS<=0){autoPeriod=10000;autoOpen=0;return;}
   float duty = (rate / 3600.0f) / flowMlS;
   unsigned long per = 10000UL;
   unsigned long op = (unsigned long)lroundf(per * duty);
@@ -383,7 +384,7 @@ void updateDisplay() {
   display.print("Valve: ");
   display.print(valveIsOpen ? "OPEN" : "CLOSED");
   display.setCursor(0, 56);
-  display.print("UKRKRAFT v1.3");
+  display.print("UKRKRAFT v1.4");
   display.display();
 }
 
@@ -409,7 +410,7 @@ void handleStatus() {
   char tbuf[16], rbuf[16];
   if (isnan(temperature)) strcpy(tbuf, "null"); else snprintf(tbuf, sizeof(tbuf), "%.2f", temperature);
   if (isnan(tRef)) strcpy(rbuf, "null"); else snprintf(rbuf, sizeof(rbuf), "%.2f", tRef);
-  const char* modeS = (mode == M_IDLE) ? "IDLE" : (mode == M_MANUAL ? "MANUAL" : (mode == M_AUTO ? "AUTO" : "CALIB"));
+  const char* modeS = mode==M_STARTSTOP?"STARTSTOP":mode==M_SS?"SS":(mode == M_IDLE) ? "IDLE" : (mode == M_MANUAL ? "MANUAL" : (mode == M_AUTO ? "AUTO" : "CALIB"));
   bool needSwap = (mode == M_AUTO && phase == PH_STAB && !swapConfirmed);
   snprintf(buf, sizeof(buf),
     R"JSON({"temp":%s,"status":"%s","info":"%s","mode":"%s","phase":"%s","valve":%s,"manualStop":%s,"needSwap":%s,"planValid":%s,"tRef":%s,"tSet":%.1f,"tHyst":%.1f,"tAlarm":%.1f,"period":%.1f,"open":%.1f,"flow":%.4f,"recipe":%s,"manualProfile":%d,"rate":%.2f,"stageAwaiting":%s,"stageDecision":%lu,"nextProfile":%d,"extraHeads":%s})JSON",
@@ -421,6 +422,10 @@ void handleStatus() {
 
 void handleStop() {
   if(stageAwaiting){server.send(409,"text/plain; charset=utf-8","Оберіть продовження або наступний етап");return;}
+  if(mode==M_SS&&server.arg("on")=="0"){
+    if(!isfinite(temperature)||millis()-lastGoodRead>=SENSOR_FAIL_MS||temperature>=ss.close||temperature>=tAlarm){server.send(400,"text/plain; charset=utf-8","SS: дочекайтеся температури нижче порога відключення");return;}
+    ssTemperaturePaused=false;cycleStart=millis();
+  }
   manualStop = server.arg("on") == "1";
   if (manualStop) valveClose();
   server.send(200, "text/plain", "OK");
@@ -636,10 +641,13 @@ void loop() {
     return;
   }
 
+  if(mode==M_STARTSTOP||mode==M_SS){simpleLoop(now);return;}
+
   if(stageAwaiting){valveClose();showStageDecisionStatus();return;}
-  if (temperature > tSet + tHyst) coolingBlock = true;
+  if(!manualExtra&&manualProfiles[manualProfile].target>0&&deliveredNow()>=manualProfiles[manualProfile].target){awaitStageDecision();return;}
+  if (temperature >= tSet + tHyst) coolingBlock = true;
   else if (temperature < tSet - tHyst) coolingBlock = false;
-  snprintf(infoText,sizeof(infoText),"%s: %.1f мл; %.0f мл/год; уставка %.2f C",manualNames[manualProfile],deliveredNow(),manualProfiles[manualProfile].rate,tSet);
+  snprintf(infoText,sizeof(infoText),"%s: %.1f / %.1f мл; %.0f мл/год%s",manualNames[manualProfile],deliveredNow(),manualProfiles[manualProfile].target,manualProfiles[manualProfile].rate,manualExtra?"; додатковий відбір":"");
 
   if (manualStop || coolingBlock) {
     valveClose();

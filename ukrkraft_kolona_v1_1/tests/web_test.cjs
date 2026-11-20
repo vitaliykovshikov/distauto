@@ -8,6 +8,7 @@ const el=id=>{assert.ok(elements[id],`Missing element: ${id}`);return elements[i
 el('newKind').value='auto';
 const status={mode:'IDLE',phase:'NONE',temp:78,tSet:78.3,tHyst:.3,tAlarm:82,period:10,open:1,flow:5,recipe:false,manualProfile:0,stageAwaiting:false,stageDecision:0,nextProfile:1,extraHeads:false};
 const features={simulator:true,maxRate:4000,minRate:1,manualProfile:0,recipe:false,recipeRates:[4000,400,800],historyReady:false,historyLimit:0,historyUsed:0,manualProfiles:[{id:0,set:78.3,hyst:.3,rate:400},{id:1,set:78.3,hyst:.3,rate:4000},{id:2,set:78.3,hyst:.3,rate:1000}]};
+features.startStop={close:78.5,open:78.2,rate:2000,decrement:10,reduce:false};features.ss={close:80,open:0,rate:4000,decrement:10,reduce:false};
 const plan={revision:1,aa:4000,headsMl:416.67,bodyMl:3125,headsRate:400,bodyRate:4000,yieldMl:3541.67,strengthPct:96};
 const recipe={revision:2,aaMl:4000,totalPct:20,targetsMl:[83.33,125,625],rates:[4000,400,800],totalMl:833.33};
 const calls=[],storage=new Map();let presets=[],startOK=true,delayPlan=null;
@@ -22,8 +23,11 @@ const context=vm.createContext({document:{getElementById:el,createElement:makeEl
  if(url==='/preset/save'){const p={slot:presets.length,name:values.name,kind:values.kind,config:values.config};presets=presets.filter(v=>v.name!==p.name);presets.push(p);return ok(presets);}
  if(url==='/preset/delete'){presets=presets.filter(p=>p.slot!==Number(values.slot));return ok(presets);}
  if(url==='/plan'||url==='/recipe/plan'){if(delayPlan)await delayPlan;return ok(url==='/plan'?plan:recipe);}
+ if(url==='/simple/config'){const d={...values,close:Number(values.close),open:Number(values.open),rate:Number(values.rate),decrement:Number(values.decrement),reduce:values.reduce==='1'};features[values.kind==='ss'?'ss':'startStop']=d;return ok(d);}
+ if(url==='/simple/start'){status.mode=values.kind==='ss'?'SS':'STARTSTOP';status.phase='BODY';return ok('OK');}
+ if(url==='/simple/end'){status.mode='IDLE';status.phase='NONE';return ok('OK');}
  if(url==='/auto/start'||url==='/recipe/start'){if(!startOK)return {ok:false,text:async()=>'Невірна швидкість'};Object.assign(status,{mode:'AUTO',phase:'WARMUP',recipe:url==='/recipe/start'});return ok('OK');}
- if(url==='/manual/config'){Object.assign(features.manualProfiles[Number(values.profile)],{set:Number(values.set),hyst:Number(values.hyst),rate:Number(values.rate)});return ok(features.manualProfiles);}
+ if(url==='/manual/config'){Object.assign(features.manualProfiles[Number(values.profile)],{set:Number(values.set),hyst:Number(values.hyst),rate:Number(values.rate),automatic:values.automatic==='1',target:Number(values.target)});return ok(features.manualProfiles);}
  if(url==='/manual/start'){if(status.mode!=='IDLE')return {ok:false,text:async()=>'Спочатку завершіть етап'};Object.assign(status,{mode:'MANUAL',phase:['HEADS','BODY','TAILS'][Number(values.profile)],manualProfile:Number(values.profile),recipe:false});return ok('OK');}
  if(url==='/stage/end'){status.stageAwaiting=true;status.manualStop=true;status.stageDecision++;status.nextProfile=status.manualProfile<2?status.manualProfile+1:-1;return ok('OK');}
  if(url==='/stage/choice'){status.stageAwaiting=false;status.manualStop=false;if(values.choice==='next'){if(status.nextProfile<0){status.mode='IDLE';status.phase='NONE';}else{status.manualProfile=status.nextProfile;status.mode='MANUAL';status.phase=['HEADS','BODY','TAILS'][status.manualProfile];}}return ok('OK');}
@@ -35,7 +39,7 @@ const context=vm.createContext({document:{getElementById:el,createElement:makeEl
 const run=code=>vm.runInContext(code,context);
 (async()=>{
  new vm.Script(script);run(script);await run('boot()');
- assert.equal(el('hh').value,'1');assert.equal(el('dd').value,'4');assert.equal(el('flowHour').value,'18000.00');assert.equal(el('historyCard').style.display,'none');
+ assert.ok(!elements.m0hyst);assert.ok(!source.includes('Спочатку 2% АС, потім ще 3% АС'));assert.equal(el('hh').value,'1');assert.equal(el('dd').value,'4');assert.equal(el('flowHour').value,'18000.00');assert.equal(el('historyCard').style.display,'none');
  run("openMode('auto')");await run('calc()');
  for(const value of ['4000.00','416.67','3125.00','3.542'])assert.ok(el('plan').textContent.includes(value));
  startOK=false;await run('startCalculated()');assert.equal(el('appMessage').textContent,'Невірна швидкість');
@@ -47,7 +51,7 @@ const run=code=>vm.runInContext(code,context);
  await run('startCalculated()');el('dripRateNumber').value='600';el('dripRateNumber').listeners.input();await el('dripRateNumber').listeners.change();assert.equal(el('dripRate').value,'600');
  const rate=calls.findLast(c=>c.url==='/recipe/rate');assert.equal(rate.body.get('stage'),'1');assert.equal(rate.body.get('rate'),'600');
  await run('endProcess()');await run('endProcess()');
- run("openMode('manual')");el('m1rate').value='3000';el('m1rate').listeners.input();await run('startManual(1)');assert.equal(status.phase,'BODY');
+ run("openMode('manual')");el('m0target').value='50';el('m1target').value='200';el('m2target').value='25';el('m1automatic').checked=true;el('m1rate').value='3000';el('m1rate').listeners.input();await run('startManual(1)');assert.equal(status.phase,'BODY');assert.equal(features.manualProfiles[0].target,50);assert.equal(features.manualProfiles[1].target,200);assert.equal(features.manualProfiles[1].automatic,true);
  el('m1rate').value='2500';el('m1rate').listeners.input();await el('m1rate').listeners.change();assert.equal(el('m1rateNumber').value,'2500');assert.equal(features.manualProfiles[1].rate,2500);
  await run('finishStage()');assert.equal(el('stageChoice').style.display,'block');assert.equal(el('stageNext').textContent,'Перейти до хвостів');await run("chooseStage('continue')");assert.equal(status.phase,'BODY');await run('finishStage()');await run("chooseStage('next')");assert.equal(status.phase,'TAILS');await run('endProcess()');assert.equal(status.mode,'IDLE');
  el('presetName').value='Колона «4»';await run('savePreset()');assert.equal(presets.length,1);assert.ok(storage.has('distauto.presets.v1'));
@@ -57,6 +61,10 @@ const run=code=>vm.runInContext(code,context);
  context.partial=csv+'10,78.3,HEADS,400\n#summary,{';assert.equal(run('parseReportCsv(partial).summary.deliveredMl'),1);
  run("applyPreset({name:'Авто 3500',kind:'auto',config:'headsRate=350&bodyRate=3500'})");await run('calc()');assert.equal(el('bodyRate').value,'3500');
  run("openMode('auto')");let resolve;delayPlan=new Promise(r=>resolve=r);const pending=run('calc()');el('hh').listeners.input();resolve();await pending;assert.equal(run('planRevision'),null);assert.equal(el('startAuto').style.display,'none');
+ run("openMode('startstop')");assert.equal(el('simpleTitle').textContent,'Старт-стоп');assert.equal(el('simpleClose').value,'78.5');el('simpleReduce').checked=true;el('simpleReduce').listeners.change();assert.equal(el('simpleDecrementOptions').style.display,'block');
+ el('startStopRateNumber').value='1750';el('startStopRateNumber').listeners.input();await run('startSimple()');assert.equal(status.mode,'STARTSTOP');assert.equal(features.startStop.rate,1750);assert.equal(features.startStop.reduce,true);await run('endProcess()');
+ el('presetName').value='Мій старт-стоп';await run('savePreset()');const sp=presets.at(-1);assert.equal(sp.kind,'startstop');assert.ok(sp.config.includes('simpleReduce=1'));run("openMode('ss')");assert.equal(el('simpleTitle').textContent,'⚡ SS ⚡');assert.equal(el('startStopOptions').style.display,'none');assert.equal(el('simpleClose').value,'80');
+ run('applyPreset(presets.at(-1))');assert.equal(el('simpleClose').value,'78.5');assert.equal(el('simpleReduce').checked,true);assert.equal(el('startStopRateNumber').value,'1750');
  el('spitRateNumber').value='4001';el('spitRateNumber').listeners.input();assert.throws(()=>run("readRate('spitRate')"),/4000/);
- console.log('Web: paired numeric inputs, stage choices, recipe body/tails, four modes, staged rates, manual profiles, named presets, stale plans, portable CSV and simulator history exclusion: OK');
+ console.log('Web: paired numeric inputs, stage choices, recipe body/tails, start-stop settings/presets, staged rates, manual profiles, named presets, stale plans, portable CSV and simulator history exclusion: OK');
 })().catch(e=>{console.error(e);process.exitCode=1;});

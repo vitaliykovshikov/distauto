@@ -7,11 +7,16 @@
 #endif
 
 float argF(const char* name);
-struct ManualProfile { float set, hyst, rate; };
-ManualProfile manualProfiles[3]={{78.3f,.3f,400},{78.3f,.3f,4000},{78.3f,.3f,1000}};
+struct ManualProfile { float set, hyst, rate; bool automatic=false; float target=0; };
+ManualProfile manualProfiles[3]={{78.3f,0,400,false,500},{78.3f,.3f,4000,false,3000},{78.3f,.3f,1000,false,500}};
+bool manualExtra=false,ssTemperaturePaused=false;
 int manualProfile=0;
+struct SimpleSettings { float close, open, rate, decrement; bool reduce; };
+SimpleSettings startStop={78.5f,78.2f,2000,10,false},ss={80,0,4000,10,false};
+String simpleJson(const SimpleSettings& p);
 float recipePct=15,recipeRates[3]={4000,400,800},recipeTargets[3]={0,0,0};
 bool recipeExtraHeads=false;
+bool recipeAutomatic=false;
 unsigned long stageDecisionId=0;
 const char* manualNames[3]={"Голови","Тіло","Хвости"};
 const Phase manualPhases[3]={PH_HEADS,PH_BODY,PH_TAILS};
@@ -76,9 +81,12 @@ String profilesJson(){
   for(int i=0;i<3;i++){
     if(i)out+=',';
     out+=String("{\"id\":")+String((unsigned long)i)+",\"name\":"+quote(manualNames[i])+",\"set\":"+num(manualProfiles[i].set)+
-      ",\"hyst\":"+num(manualProfiles[i].hyst)+",\"rate\":"+num(manualProfiles[i].rate)+"}";
+      ",\"hyst\":"+num(manualProfiles[i].hyst)+",\"rate\":"+num(manualProfiles[i].rate)+",\"automatic\":"+b(manualProfiles[i].automatic)+",\"target\":"+num(manualProfiles[i].target)+"}";
   }
   return out+"]";
+}
+String simpleJson(const SimpleSettings& p){
+  return String("{\"close\":")+num(p.close)+",\"open\":"+num(p.open)+",\"rate\":"+num(p.rate)+",\"decrement\":"+num(p.decrement)+",\"reduce\":"+b(p.reduce)+"}";
 }
 String configJson(){
   return String("{\"vol\":")+num(plan.vol)+",\"abv\":"+num(plan.abv)+",\"height\":"+num(plan.h)+",\"diameter\":"+num(plan.d)+
@@ -86,8 +94,8 @@ String configJson(){
     ",\"strengthPct\":"+num(plan.strengthPct)+",\"headsRate\":"+num(plan.headsRate)+",\"bodyRate\":"+num(plan.bodyRate)+
     ",\"decrementPct\":"+num(plan.decrementPct)+",\"reduceDt\":"+num(plan.reduceDt)+",\"flowMlS\":"+num(flowMlS,4)+
     ",\"alarm\":"+num(tAlarm)+",\"manualProfile\":"+String((unsigned long)manualProfile)+",\"manualProfiles\":"+profilesJson()+
-    ",\"recipePct\":"+num(recipePct)+",\"recipeRates\":["+num(recipeRates[0])+","+num(recipeRates[1])+","+num(recipeRates[2])+
-    "],\"recipeTargetsMl\":["+num(recipeTargets[0])+","+num(recipeTargets[1])+","+num(recipeTargets[2])+"]}";
+    ",\"recipePct\":"+num(recipePct)+",\"recipeAutomatic\":"+b(recipeAutomatic)+",\"recipeRates\":["+num(recipeRates[0])+","+num(recipeRates[1])+","+num(recipeRates[2])+
+    "],\"recipeTargetsMl\":["+num(recipeTargets[0])+","+num(recipeTargets[1])+","+num(recipeTargets[2])+"],\"startStop\":"+simpleJson(startStop)+",\"ss\":"+simpleJson(ss)+"}";
 }
 int volumeIndex(){
   switch(phase){case PH_SPIT:return 0;case PH_DRIP:return 1;case PH_STREAM:return 2;
@@ -101,6 +109,7 @@ void accountRun(float ml){
 float currentRate(){
   if(stageAwaiting||manualStop||coolingBlock||!run.active)return 0;
   if(mode==M_MANUAL)return manualProfiles[manualProfile].rate;
+  if(mode==M_STARTSTOP||mode==M_SS)return phaseRate*rateFactor;
   return phase==PH_HEADS||phase==PH_BODY||phase==PH_SPIT||phase==PH_DRIP||phase==PH_STREAM?phaseRate*rateFactor:0;
 }
 String runMeta(){
@@ -149,12 +158,12 @@ void recordRunSample(unsigned long now,bool force=false){
 }
 void logPhaseChange(){recordRunSample(millis(),true);}
 void beginRun(const char* label){
-  stageAwaiting=false;recipeExtraHeads=false;
+  stageAwaiting=false;recipeExtraHeads=false;manualExtra=false;ssTemperaturePaused=false;
   run.exists=true;run.active=true;run.truncated=false;run.duration=0;run.lastSample=0;
   run.traceInterval=5000;run.lastTrace=0;run.count=0;run.ml=0;run.result="";
   for(float& ml:run.volumes)ml=0;
   run.start=millis();
-  run.kind=strcmp(label,"Ручний")==0?"manual":headsRecipe?"recipe":"auto";
+  run.kind=strcmp(label,"Старт-стоп")==0?"startstop":strcmp(label,"SS")==0?"ss":strcmp(label,"Ручний")==0?"manual":headsRecipe?"recipe":"auto";
   run.id=prefs.getULong("runId",0)+1;prefs.putULong("runId",run.id);
   run.label=server.arg("label");if(!run.label.length()||run.label.length()>96)run.label=label;
   run.date=server.arg("date");if(run.date.length()>32)run.date="";
@@ -209,6 +218,12 @@ void applyRecipePhase(Phase p){
   if(phaseRate>0)applyTiming();else {autoPeriod=10000;autoOpen=0;}
 }
 int nextStageProfile(){return mode==M_AUTO&&headsRecipe?1:manualProfile<2?manualProfile+1:-1;}
+bool activateManualProfile(int i,bool newRun,bool respond=true);
+bool advanceStage(bool respond){
+  int next=nextStageProfile();
+  if(next<0){endRun("completed");endToIdle();return true;}
+  return activateManualProfile(next,false,respond);
+}
 void showStageDecisionStatus(){
   setStatus("Етап завершено: оберіть наступну дію","STAGE WAIT");
   snprintf(infoText,sizeof(infoText),"Клапан закритий. %.1f мл за етап",deliveredNow());
@@ -217,6 +232,9 @@ void awaitStageDecision(){
   valveClose();stageAwaiting=true;manualStop=true;stageDecisionId++;
   if(mode==M_AUTO&&headsRecipe)totalHeads=run.volumes[0]+run.volumes[1]+run.volumes[2];
   showStageDecisionStatus();logPhaseChange();
+  if((mode==M_AUTO&&headsRecipe?recipeAutomatic:manualProfiles[manualProfile].automatic)&&!advanceStage(false)){
+    setStatus("Перехід зупинено: перевірте наступний етап","STAGE WAIT");
+  }
 }
 void recipeLoop(unsigned long now){
   int i=phase==PH_SPIT?0:phase==PH_DRIP?1:2;
@@ -241,6 +259,7 @@ void handleRecipePlan(){
   recipePct=pct;recipeRates[0]=spit;recipeRates[1]=drip;recipeRates[2]=stream;
   recipeTargets[0]=plan.aaMl*2/plan.strengthPct;recipeTargets[1]=plan.aaMl*3/plan.strengthPct;recipeTargets[2]=plan.aaMl*pct/plan.strengthPct;
   headsRecipe=true;
+  recipeAutomatic=server.arg("automatic")=="1";prefs.putULong("recipeAuto",recipeAutomatic?1:0);
   String out=String("{\"revision\":")+String(plan.revision)+",\"aaMl\":"+num(plan.aaMl)+",\"totalPct\":"+num(5+pct)+
     ",\"targetsMl\":["+num(recipeTargets[0])+","+num(recipeTargets[1])+","+num(recipeTargets[2])+"],\"rates\":["+
     num(spit)+","+num(drip)+","+num(stream)+"],\"totalMl\":"+num(plan.headsMl)+"}";
@@ -269,26 +288,33 @@ void saveManualProfile(int i){
   char key[12];snprintf(key,sizeof(key),"m%dset",i);prefs.putFloat(key,manualProfiles[i].set);
   snprintf(key,sizeof(key),"m%dhyst",i);prefs.putFloat(key,manualProfiles[i].hyst);
   snprintf(key,sizeof(key),"m%drate",i);prefs.putFloat(key,manualProfiles[i].rate);
+  snprintf(key,sizeof(key),"m%dauto",i);prefs.putULong(key,manualProfiles[i].automatic?1:0);
+  snprintf(key,sizeof(key),"m%dtarget",i);prefs.putFloat(key,manualProfiles[i].target);
 }
 void handleManualConfig(){
   float index=argF("profile"),set=argF("set"),hyst=argF("hyst"),rate=argF("rate");
+  if(index==0)hyst=0;
+  float target=server.arg("target").length()?argF("target"):0;
   if(!isfinite(index)||index<0||index>2||floorf(index)!=index||
       (mode!=M_IDLE&&mode!=M_MANUAL&&!(mode==M_AUTO&&headsRecipe&&index>0))||
-      !isfinite(set)||set<0||set>=tAlarm||!isfinite(hyst)||hyst<0||hyst>20||!validRate(rate,true)){
+      !isfinite(set)||set<0||set>=tAlarm||!isfinite(hyst)||hyst<0||hyst>20||!validRate(rate,true)||!isfinite(target)||target<0||target>200000){
     server.send(400,"text/plain; charset=utf-8","Перевірте профіль, температуру та витрату клапана");return;
   }
   int i=(int)index;
   if(mode==M_MANUAL&&manualProfile==i)valveClose();
-  manualProfiles[i]={set,hyst,rate};saveManualProfile(i);
+  bool changedTarget=target!=manualProfiles[i].target;
+  manualProfiles[i]={set,hyst,rate,server.arg("automatic")=="1",target};saveManualProfile(i);
+  if(mode==M_MANUAL&&manualProfile==i&&changedTarget)manualExtra=false;
   if(mode==M_MANUAL&&manualProfile==i){tSet=set;tHyst=hyst;phaseRate=rate;rateFactor=1;if(rate>0)applyTiming();cycleStart=millis();logPhaseChange();}
   server.send(200,"application/json; charset=utf-8",profilesJson());
 }
-bool activateManualProfile(int i,bool newRun){
+bool activateManualProfile(int i,bool newRun,bool respond){
   ManualProfile p=manualProfiles[i];
-  if(!validRate(p.rate)||!isfinite(p.set)||p.set>=tAlarm||!isfinite(temperature)||millis()-lastGoodRead>=SENSOR_FAIL_MS||temperature>=tAlarm){server.send(400,"text/plain; charset=utf-8","Перевірте датчик, швидкість і температурну уставку профілю");return false;}
+  if(!validRate(p.rate)||!isfinite(p.set)||p.set>=tAlarm||!isfinite(temperature)||millis()-lastGoodRead>=SENSOR_FAIL_MS||temperature>=tAlarm){if(respond)server.send(400,"text/plain; charset=utf-8","Перевірте датчик, швидкість і температурну уставку профілю");return false;}
   valveClose();manualProfile=i;
   if(newRun){headsRecipe=false;beginRun("Ручний");}
   stageAwaiting=false;
+  manualExtra=false;
   mode=M_MANUAL;manualStop=false;coolingBlock=false;idleValveClosed=true;
   tSet=p.set;tHyst=p.hyst;startPhase(manualPhases[i]);phaseRate=p.rate;applyTiming();
   setStatus(String("РУЧНИЙ: ")+manualNames[i],"MANUAL");return true;
@@ -310,19 +336,72 @@ void handleStageChoice(){
     if(!isfinite(temperature)||millis()-lastGoodRead>=SENSOR_FAIL_MS||temperature>=tAlarm){server.send(400,"text/plain","Check sensor/temperature");return;}
     stageAwaiting=false;manualStop=false;cycleStart=millis();
     if(mode==M_AUTO&&headsRecipe)recipeExtraHeads=true;
+    if(mode==M_MANUAL)manualExtra=true;
     if(mode==M_MANUAL)setStatus(String("РУЧНИЙ: ")+manualNames[manualProfile],"MANUAL");
     else setStatus("2-3-15: додатковий відбір голів","EXTRA HEADS");
     logPhaseChange();server.send(200,"text/plain","OK");return;
   }
   if(choice!="next"){server.send(400,"text/plain","Invalid choice");return;}
-  int next=nextStageProfile();
-  if(next<0){endRun("completed");endToIdle();server.send(200,"text/plain","OK");return;}
-  if(activateManualProfile(next,false))server.send(200,"text/plain","OK");
+  if(advanceStage(true))server.send(200,"text/plain","OK");
 }
 void handleManualStart(){
   float index=argF("profile");
   if(!isfinite(index)||index<0||index>2||floorf(index)!=index){server.send(400,"text/plain","Invalid profile");return;}
   startManualProfile((int)index);
+}
+bool simpleKind(const String& kind){return kind=="startstop"||kind=="ss";}
+bool validSimple(const SimpleSettings& p,bool isSS){
+  return isfinite(p.close)&&p.close>=0&&p.close<tAlarm&&validRate(p.rate,true)&&
+    (isSS||(isfinite(p.open)&&p.open>=0&&p.open<p.close&&isfinite(p.decrement)&&p.decrement>=1&&p.decrement<=50));
+}
+void saveSimpleSettings(const char* prefix,const SimpleSettings& p){
+  String key=String(prefix)+"c";prefs.putFloat(key.c_str(),p.close);
+  key=String(prefix)+"o";prefs.putFloat(key.c_str(),p.open);
+  key=String(prefix)+"r";prefs.putFloat(key.c_str(),p.rate);
+  key=String(prefix)+"d";prefs.putFloat(key.c_str(),p.decrement);
+  key=String(prefix)+"e";prefs.putULong(key.c_str(),p.reduce?1:0);
+}
+void handleSimpleConfig(){
+  String kind=server.arg("kind");bool isSS=kind=="ss";
+  SimpleSettings p={argF("close"),isSS?0:argF("open"),argF("rate"),isSS?10:argF("decrement"),!isSS&&server.arg("reduce")=="1"};
+  if(!simpleKind(kind)||!validSimple(p,isSS)||(mode!=M_IDLE&&mode!=(isSS?M_SS:M_STARTSTOP))){server.send(400,"text/plain; charset=utf-8","Перевірте температури та швидкість; відкриття має бути нижче закриття і аварійного порога");return;}
+  if(mode!=M_IDLE)valveClose();
+  (isSS?ss:startStop)=p;saveSimpleSettings(isSS?"ss":"st",p);
+  if(mode!=M_IDLE){phaseRate=p.rate;if(p.rate>0)applyTiming();cycleStart=millis();logPhaseChange();}
+  server.send(200,"application/json",simpleJson(p));
+}
+void handleSimpleStart(){
+  if(!readyToStart())return;
+  String kind=server.arg("kind");bool isSS=kind=="ss";SimpleSettings p=isSS?ss:startStop;
+  if(!simpleKind(kind)||!validSimple(p,isSS)||!validRate(p.rate)|| (isSS&&temperature>=p.close)){
+    server.send(400,"text/plain; charset=utf-8","Перевірте швидкість, датчик та температури режиму");return;
+  }
+  valveClose();headsRecipe=false;beginRun(isSS?"SS":"Старт-стоп");
+  mode=isSS?M_SS:M_STARTSTOP;manualStop=false;idleValveClosed=true;
+  startPhase(PH_BODY);phaseRate=p.rate;rateFactor=1;applyTiming();
+  coolingBlock=!isSS&&temperature>p.open;
+  setStatus(isSS?"SS: відбір":"СТАРТ-СТОП: відбір",isSS?"SS":"START STOP");
+  server.send(200,"text/plain","OK");
+}
+void handleSimpleEnd(){
+  if(mode!=M_STARTSTOP&&mode!=M_SS){server.send(409,"text/plain","Simple mode only");return;}
+  endToIdle();server.send(200,"text/plain","OK");
+}
+void simpleLoop(unsigned long now){
+  if(mode==M_SS&&temperature>=ss.close&&!ssTemperaturePaused){
+    valveClose();ssTemperaturePaused=true;manualStop=true;logPhaseChange();
+  }
+  if(mode==M_STARTSTOP){
+    if(!coolingBlock&&temperature>=startStop.close){
+      valveClose();coolingBlock=true;
+      if(startStop.reduce&&!manualStop&&phaseRate>0){rateFactor=fmaxf(MIN_RATE_FACTOR,rateFactor*(1-startStop.decrement/100));applyTiming();}
+      logPhaseChange();
+    }else if(coolingBlock&&temperature<=startStop.open){coolingBlock=false;cycleStart=now;logPhaseChange();}
+  }
+  if(manualStop||coolingBlock){valveClose();cycleStart=now;}
+  else if(phaseRate>0)runPulse(autoPeriod,autoOpen);else valveClose();
+  setStatus(ssTemperaturePaused?"SS: температурна пауза, продовжіть вручну":manualStop?"ПАУЗА вручну":coolingBlock?"СТАРТ-СТОП: очікування відкриття":mode==M_SS?"SS: відбір":"СТАРТ-СТОП: відбір",mode==M_SS?"SS":"START STOP");
+  snprintf(infoText,sizeof(infoText),"%.0f мл/год (%.0f%%); %.1f мл",currentRate(),rateFactor*100,deliveredNow());
 }
 void handlePresets(){
   String out="[";
@@ -338,7 +417,7 @@ void handlePresets(){
 void handlePresetSave(){
   if(mode!=M_IDLE){server.send(409,"text/plain","IDLE only");return;}
   String name=server.arg("name"),kind=server.arg("kind"),config=server.arg("config");
-  if(!name.length()||name.length()>64||!config.length()||config.length()>1800||!(kind=="auto"||kind=="manual"||kind=="recipe")){
+  if(!name.length()||name.length()>64||!config.length()||config.length()>2400||!(kind=="auto"||kind=="manual"||kind=="recipe"||simpleKind(kind))){
     server.send(400,"text/plain; charset=utf-8","Назва: 1–64 байти; оберіть тип і параметри режиму");return;
   }
   int slot=-1;
@@ -357,7 +436,7 @@ void handlePresetDelete(){
 void handleFeatures(){
   String out=String("{\"simulator\":")+b(simulatorBuild())+",\"maxRate\":"+num(controlMaximumRate())+",\"minRate\":"+num(flowMlS*.2f)+
     ",\"manualProfile\":"+String((unsigned long)manualProfile)+",\"manualProfiles\":"+profilesJson()+",\"recipe\":"+b(headsRecipe)+
-    ",\"recipeRates\":["+num(recipeRates[0])+","+num(recipeRates[1])+","+num(recipeRates[2])+"],\"historyReady\":"+b(historyReady)+
+    ",\"recipeRates\":["+num(recipeRates[0])+","+num(recipeRates[1])+","+num(recipeRates[2])+"],\"recipeAutomatic\":"+b(recipeAutomatic)+",\"startStop\":"+simpleJson(startStop)+",\"ss\":"+simpleJson(ss)+",\"historyReady\":"+b(historyReady)+
     ",\"historyLimit\":"+String(historyBudget());
 #ifndef DISTAUTO_SIMULATOR
   out+=String(",\"historyUsed\":")+String((unsigned long)(historyReady?LittleFS.usedBytes():0));
@@ -440,12 +519,24 @@ void handleHistoryDelete(){
 #endif
 }
 void initRunFeatures(){
+  for(int i=0;i<2;i++){
+    const char* prefix=i?"ss":"st";SimpleSettings &p=i?ss:startStop;
+    String key=String(prefix)+"c";p.close=prefs.getFloat(key.c_str(),p.close);
+    key=String(prefix)+"o";p.open=prefs.getFloat(key.c_str(),p.open);
+    key=String(prefix)+"r";p.rate=fminf(controlMaximumRate(),prefs.getFloat(key.c_str(),p.rate));
+    key=String(prefix)+"d";p.decrement=prefs.getFloat(key.c_str(),p.decrement);
+    key=String(prefix)+"e";p.reduce=prefs.getULong(key.c_str(),0)!=0;
+  }
   for(int i=0;i<3;i++){
     char key[12];snprintf(key,sizeof(key),"m%dset",i);manualProfiles[i].set=prefs.getFloat(key,tSet);
     snprintf(key,sizeof(key),"m%dhyst",i);manualProfiles[i].hyst=prefs.getFloat(key,tHyst);
+    if(i==0)manualProfiles[i].hyst=0;
     snprintf(key,sizeof(key),"m%drate",i);manualProfiles[i].rate=fminf(controlMaximumRate(),prefs.getFloat(key,manualProfiles[i].rate));
+    snprintf(key,sizeof(key),"m%dauto",i);manualProfiles[i].automatic=prefs.getULong(key,0)!=0;
+    snprintf(key,sizeof(key),"m%dtarget",i);manualProfiles[i].target=prefs.getFloat(key,manualProfiles[i].target);
   }
   recipeRates[0]=controlMaximumRate();
+  recipeAutomatic=prefs.getULong("recipeAuto",0)!=0;
 #ifndef DISTAUTO_SIMULATOR
   historyReady=LittleFS.begin(false);if(historyReady)LittleFS.mkdir("/history");
 #endif
@@ -454,6 +545,7 @@ void initRunFeatures(){
   server.on("/recipe/plan",HTTP_POST,handleRecipePlan);server.on("/recipe/start",HTTP_POST,handleRecipeStart);server.on("/recipe/rate",HTTP_POST,handleRecipeRate);
   server.on("/manual/config",HTTP_POST,handleManualConfig);server.on("/manual/start",HTTP_POST,handleManualStart);
   server.on("/stage/end",HTTP_POST,handleStageEnd);server.on("/stage/choice",HTTP_POST,handleStageChoice);
+  server.on("/simple/config",HTTP_POST,handleSimpleConfig);server.on("/simple/start",HTTP_POST,handleSimpleStart);server.on("/simple/end",HTTP_POST,handleSimpleEnd);
   server.on("/presets",HTTP_GET,handlePresets);server.on("/preset/save",HTTP_POST,handlePresetSave);server.on("/preset/delete",HTTP_POST,handlePresetDelete);
   server.on("/report",HTTP_GET,handleReport);server.on("/report.csv",HTTP_GET,handleReportCsv);
   server.on("/history",HTTP_GET,handleHistoryList);server.on("/history/init",HTTP_POST,handleHistoryInit);
