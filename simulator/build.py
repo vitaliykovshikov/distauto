@@ -20,8 +20,9 @@ def build(output: Path, emxx: str):
     version = hashlib.sha256(b"\0".join(path.read_bytes() for path in sources)).hexdigest()[:16]
     module_name = f"column-{version}.mjs"
     bridge_name = f"bridge-{version}.js"
+    firmware_name = f"distauto-firmware-{version}.zip"
     html = re.search(r'R"HTML\((.*?)\)HTML"', (sketch.parent / "WebPage.h").read_text(), re.S).group(1)
-    panel = (ROOT / "simulator/panel.html").read_text()
+    panel = (ROOT / "simulator/panel.html").read_text().replace("distauto-firmware.zip",firmware_name)
     css = "\n.sim-panel{border:1px solid #396fa6}.sim-panel select{width:100%;padding:10px;font-size:18px;border-radius:8px;background:#111;color:#eee;border:1px solid #444;box-sizing:border-box}.sim-download{flex:1;display:flex;align-items:center;justify-content:center;color:#9ac6ff;margin-top:14px;padding:10px;text-align:center}button:disabled{opacity:.5}\n"
     html = html.replace("</style>", css + "</style>")
     html = html.replace("<body>", "<body>\n" + panel, 1)
@@ -34,9 +35,10 @@ def build(output: Path, emxx: str):
     # Stable import for the Node.js smoke test; the browser uses only versioned assets.
     (output / "column.mjs").write_text(f"export {{default}} from './{module_name}';\n")
     shutil.copy2(sketch, output / sketch.name)
-    with zipfile.ZipFile(output / "distauto-firmware.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(output / firmware_name, "w", zipfile.ZIP_DEFLATED) as archive:
         for source in [sketch, *sorted(sketch.parent.glob("*.h")), sketch.parent / "README.md"]:
             archive.write(source, f"{sketch.parent.name}/{source.name}")
+    shutil.copy2(output / firmware_name, output / "distauto-firmware.zip")
     with tempfile.TemporaryDirectory(prefix="distauto-headers-") as directory:
         headers = Path(directory)
         for name in HEADERS:

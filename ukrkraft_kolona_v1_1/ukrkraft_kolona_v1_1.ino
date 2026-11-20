@@ -1,5 +1,5 @@
 // ==========================================
-// УКРКРАФТ | Версія: v1.2
+// УКРКРАФТ | Версія: v1.3
 // Автоматика ректифікації: ESP32 + DS18B20 + Реле (НВ клапан) + OLED + Bluetooth + OTA
 // Wi-Fi: мережа "Kolona" (пароль: 12345678) -> http://192.168.4.1
 // Bluetooth: "ESP32_Kolona"
@@ -105,6 +105,8 @@ float sbuf[SBUF_N];
 int scount = 0, sidx = 0;
 unsigned long lastSample = 0;
 bool headsRecipe = false;
+bool stageAwaiting = false;
+void showStageDecisionStatus();
 void beginRun(const char* label);
 void endRun(const char* result);
 void accountRun(float ml);
@@ -306,6 +308,7 @@ void checkOverTemp(unsigned long now) {
 }
 
 void autoLoop(unsigned long now) {
+  if(stageAwaiting){valveClose();showStageDecisionStatus();return;}
   if (manualStop) {
     over1Since = 0;
     valveClose();
@@ -380,7 +383,7 @@ void updateDisplay() {
   display.print("Valve: ");
   display.print(valveIsOpen ? "OPEN" : "CLOSED");
   display.setCursor(0, 56);
-  display.print("UKRKRAFT v1.2");
+  display.print("UKRKRAFT v1.3");
   display.display();
 }
 
@@ -409,14 +412,15 @@ void handleStatus() {
   const char* modeS = (mode == M_IDLE) ? "IDLE" : (mode == M_MANUAL ? "MANUAL" : (mode == M_AUTO ? "AUTO" : "CALIB"));
   bool needSwap = (mode == M_AUTO && phase == PH_STAB && !swapConfirmed);
   snprintf(buf, sizeof(buf),
-    R"JSON({"temp":%s,"status":"%s","info":"%s","mode":"%s","phase":"%s","valve":%s,"manualStop":%s,"needSwap":%s,"planValid":%s,"tRef":%s,"tSet":%.1f,"tHyst":%.1f,"tAlarm":%.1f,"period":%.1f,"open":%.1f,"flow":%.4f,"recipe":%s,"manualProfile":%d,"rate":%.2f})JSON",
+    R"JSON({"temp":%s,"status":"%s","info":"%s","mode":"%s","phase":"%s","valve":%s,"manualStop":%s,"needSwap":%s,"planValid":%s,"tRef":%s,"tSet":%.1f,"tHyst":%.1f,"tAlarm":%.1f,"period":%.1f,"open":%.1f,"flow":%.4f,"recipe":%s,"manualProfile":%d,"rate":%.2f,"stageAwaiting":%s,"stageDecision":%lu,"nextProfile":%d,"extraHeads":%s})JSON",
     tbuf, statusText.c_str(), infoText, modeS, phaseName(),
     b(valveIsOpen), b(manualStop), b(needSwap), b(plan.valid), rbuf,
-    tSet, tHyst, tAlarm, periodMs / 1000.0, openMs / 1000.0, flowMlS,b(headsRecipe),manualProfile,currentRate());
+    tSet, tHyst, tAlarm, periodMs / 1000.0, openMs / 1000.0, flowMlS,b(headsRecipe),manualProfile,currentRate(),b(stageAwaiting),stageDecisionId,nextStageProfile(),b(recipeExtraHeads));
   server.send(200, "application/json; charset=utf-8", buf);
 }
 
 void handleStop() {
+  if(stageAwaiting){server.send(409,"text/plain; charset=utf-8","Оберіть продовження або наступний етап");return;}
   manualStop = server.arg("on") == "1";
   if (manualStop) valveClose();
   server.send(200, "text/plain", "OK");
@@ -474,7 +478,7 @@ void handleAutoStart() {
   if (server.arg("revision") != String(plan.revision)) { server.send(409, "text/plain; charset=utf-8", "Розрахунок змінився. Розрахуйте повторно"); return; }
   float headsRate = argF("headsRate"), bodyRate = argF("bodyRate");
   float minRate = flowMlS * 0.2f / MIN_RATE_FACTOR;
-  float maxRate = flowMlS * 3600.0f * 0.8f;
+  float maxRate = fminf(4000.0f,flowMlS * 3600.0f * 0.8f);
   if (!isfinite(flowMlS) || flowMlS <= 0 || !isfinite(headsRate) || !isfinite(bodyRate) ||
       headsRate < minRate || bodyRate < minRate || headsRate > maxRate || bodyRate > maxRate) {
     server.send(400, "text/plain; charset=utf-8", "Швидкості поза можливостями клапана. Перевірте калібрування та зменшіть швидкість"); return;
@@ -632,6 +636,7 @@ void loop() {
     return;
   }
 
+  if(stageAwaiting){valveClose();showStageDecisionStatus();return;}
   if (temperature > tSet + tHyst) coolingBlock = true;
   else if (temperature < tSet - tHyst) coolingBlock = false;
   snprintf(infoText,sizeof(infoText),"%s: %.1f мл; %.0f мл/год; уставка %.2f C",manualNames[manualProfile],deliveredNow(),manualProfiles[manualProfile].rate,tSet);
