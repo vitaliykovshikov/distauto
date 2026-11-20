@@ -538,7 +538,9 @@ void initRunFeatures(){
   recipeRates[0]=controlMaximumRate();
   recipeAutomatic=prefs.getULong("recipeAuto",0)!=0;
 #ifndef DISTAUTO_SIMULATOR
+  bootLog("LittleFS mount (without formatting)");
   historyReady=LittleFS.begin(false);if(historyReady)LittleFS.mkdir("/history");
+  bootLog(historyReady?"LittleFS OK":"LittleFS unavailable (history disabled, continuing)");
 #endif
   server.on("/features",HTTP_GET,handleFeatures);
   server.on("/rates",HTTP_GET,handleSuggestedRates);

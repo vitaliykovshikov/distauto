@@ -1,13 +1,20 @@
 // ==========================================
-// УКРКРАФТ | Версія: v1.4
+// УКРКРАФТ | Версія: v1.4.1 (діагностика запуску)
 // Автоматика ректифікації: ESP32 + DS18B20 + Реле (НВ клапан) + OLED + Bluetooth + OTA
 // Wi-Fi: мережа "Kolona" (пароль: 12345678) -> http://192.168.4.1
 // Bluetooth: "ESP32_Kolona"
 // ==========================================
 
+// Set to 0 for a USB-flashed diagnostic build without the ElegantOTA library.
+#ifndef DISTAUTO_ENABLE_OTA
+#define DISTAUTO_ENABLE_OTA 1
+#endif
+
 #include <WiFi.h>
 #include <WebServer.h>
+#if DISTAUTO_ENABLE_OTA
 #include <ElegantOTA.h>
+#endif
 #include <Preferences.h>
 #include "OneWire.h"
 #include "DallasTemperature.h"
@@ -18,6 +25,9 @@
 #include "BluetoothSerial.h"
 #include <stdlib.h>
 #include <ctype.h>
+#ifndef DISTAUTO_SIMULATOR
+#include <esp_system.h>
+#endif
 
 #if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
 #error Bluetooth is not enabled! Please run `make menuconfig` to enable it
@@ -136,6 +146,7 @@ float deliveredNow() {
 }
 
 void setStatus(const String& ua, const char* en) { statusText = ua; statusShort = en; }
+void bootLog(const char* message) { Serial.printf("[BOOT] %s\n",message);Serial.flush(); }
 const char* b(bool v) { return v ? "true" : "false"; }
 unsigned long holdMaxMs() { return holdMaxMin * 60000UL; }
 
@@ -552,9 +563,16 @@ void setup() {
   valveIsOpen = true;
 
   Serial.begin(115200);
-  SerialBT.begin("ESP32_Kolona");
+  bootLog("UKRKRAFT v1.4.1 starting");
+  Serial.printf("[BOOT] ElegantOTA: %s\n",DISTAUTO_ENABLE_OTA?"enabled":"DISABLED (diagnostic build)");
+#ifndef DISTAUTO_SIMULATOR
+  Serial.printf("[BOOT] reset=%d, flash=%lu bytes, heap=%lu bytes\n",(int)esp_reset_reason(),(unsigned long)ESP.getFlashChipSize(),(unsigned long)ESP.getFreeHeap());
+#endif
+  bootLog("Bluetooth init: ESP32_Kolona");
+  bootLog(static_cast<bool>(SerialBT.begin("ESP32_Kolona"))?"Bluetooth OK":"Bluetooth FAILED (continuing)");
 
-  prefs.begin("col", false);
+  bootLog("Preferences init");
+  bootLog(prefs.begin("col", false)?"Preferences OK":"Preferences FAILED (using defaults)");
   tSet     = prefs.getFloat("tSet", tSet);
   tHyst    = prefs.getFloat("tHyst", tHyst);
   tAlarm   = prefs.getFloat("tAlarm", tAlarm);
@@ -563,16 +581,25 @@ void setup() {
   flowMlS  = prefs.getFloat("flow", flowMlS);
   initRunFeatures();
 
-  Wire.begin(PIN_SDA, PIN_SCL);
+  bootLog("I2C init");
+  bootLog(Wire.begin(PIN_SDA, PIN_SCL)?"I2C OK":"I2C FAILED");
   Wire.setClock(400000);
+  bootLog("OLED init");
   oledOk = display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR);
+  bootLog(oledOk?"OLED init returned OK":"OLED allocation/init FAILED (continuing)");
 
+  bootLog("DS18B20 init");
   sensors.begin();
   sensors.setWaitForConversion(false);
   sensors.setResolution(12);
+  bootLog("DS18B20 init returned");
 
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(AP_SSID, AP_PASS);
+  bootLog("WiFi AP init: Kolona");
+  bootLog(WiFi.mode(WIFI_AP)?"WiFi AP mode OK":"WiFi AP mode FAILED");
+  bootLog(WiFi.softAP(AP_SSID, AP_PASS)?"WiFi softAP OK":"WiFi softAP FAILED");
+#ifndef DISTAUTO_SIMULATOR
+  Serial.printf("[BOOT] AP IP: %s; heap=%lu bytes\n",WiFi.softAPIP().toString().c_str(),(unsigned long)ESP.getFreeHeap());
+#endif
 
   server.on("/", handleRoot);
   server.on("/status", handleStatus);
@@ -586,8 +613,14 @@ void setup() {
   server.on("/calib/test", handleCalibTest);
   server.on("/calib/save", handleCalibSave);
 
+#if DISTAUTO_ENABLE_OTA
+  bootLog("ElegantOTA init");
   ElegantOTA.begin(&server);
+  bootLog("ElegantOTA init returned");
+#endif
+  bootLog("HTTP server init");
   server.begin();
+  bootLog("HTTP begin returned; setup complete");
 
   lastGoodRead = millis();
   cycleStart = millis();
@@ -595,7 +628,9 @@ void setup() {
 
 void loop() {
   server.handleClient();
+#if DISTAUTO_ENABLE_OTA
   ElegantOTA.loop();
+#endif
 
   readTemperature();
   unsigned long now = millis();

@@ -51,10 +51,11 @@ inline void digitalWrite(int,int level){relayLevel=level;}
 struct Console {
   void begin(int){}
   void begin(const char*){}
+  void flush(){}
   bool hasClient(){return false;}
   template<class... T> void printf(const char*,T...){}
 } inline Serial;
-struct BluetoothSerial:Console{};
+struct BluetoothSerial:Console{bool begin(const char*){return true;}};
 struct OneWire {OneWire(int){}};
 struct DallasTemperature {
   DallasTemperature(OneWire*){}
@@ -86,7 +87,7 @@ struct Preferences {
   std::map<std::string,float> floats;
   std::map<std::string,unsigned long> longs;
   std::map<std::string,String> strings;
-  void begin(const char*,bool){}
+  bool begin(const char*,bool){return true;}
   float getFloat(const char* key,float v){return floats.count(key)?floats[key]:v;}
   unsigned long getULong(const char* key,unsigned long v){return longs.count(key)?longs[key]:v;}
   void putFloat(const char* key,float v){floats[key]=v;}
@@ -95,7 +96,7 @@ struct Preferences {
   void putString(const char* key,String v){strings[key]=v;}
   void remove(const char* key){strings.erase(key);floats.erase(key);longs.erase(key);}
 };
-struct WireStub {void begin(int,int){} void setClock(int){}} inline Wire;
+struct WireStub {bool begin(int,int){return true;} void setClock(int){}} inline Wire;
 struct Adafruit_SSD1306 {
   Adafruit_SSD1306(int,int,WireStub*,int){}
   bool begin(int,int){return true;}
@@ -104,5 +105,5 @@ struct Adafruit_SSD1306 {
   template<class T> void print(T){}
   template<class... T> void printf(const char*,T...){}
 };
-struct WifiStub {void mode(int){} void softAP(const char*,const char*){}} inline WiFi;
+struct WifiStub {bool mode(int){return true;} bool softAP(const char*,const char*){return true;}} inline WiFi;
 struct OTAStub {void begin(WebServer*){} void loop(){}} inline ElegantOTA;

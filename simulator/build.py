@@ -21,6 +21,7 @@ def build(output: Path, emxx: str):
     module_name = f"column-{version}.mjs"
     bridge_name = f"bridge-{version}.js"
     firmware_name = f"distauto-firmware-{version}.zip"
+    diagnostic_name = f"distauto-diagnostic-no-ota-{version}.zip"
     html = re.search(r'R"HTML\((.*?)\)HTML"', (sketch.parent / "WebPage.h").read_text(), re.S).group(1)
     panel = (ROOT / "simulator/panel.html").read_text().replace("distauto-firmware.zip",firmware_name)
     css = "\n.sim-panel{border:1px solid var(--accent)}.sim-panel select{width:100%;padding:10px;font-size:18px;border-radius:8px;background:var(--page);color:var(--text);border:1px solid var(--border);box-sizing:border-box}.sim-download{flex:1;display:flex;align-items:center;justify-content:center;color:var(--detail);margin-top:14px;padding:10px;text-align:center}button:disabled{opacity:.5}\n"
@@ -39,6 +40,14 @@ def build(output: Path, emxx: str):
         for source in [sketch, *sorted(sketch.parent.glob("*.h")), sketch.parent / "README.md"]:
             archive.write(source, f"{sketch.parent.name}/{source.name}")
     shutil.copy2(output / firmware_name, output / "distauto-firmware.zip")
+    # Same controller, settings and UI, with only the OTA compile-time switch changed.
+    with zipfile.ZipFile(output / diagnostic_name, "w", zipfile.ZIP_DEFLATED) as archive:
+        for source in [sketch, *sorted(sketch.parent.glob("*.h")), sketch.parent / "README.md"]:
+            content = source.read_text()
+            if source == sketch:
+                assert content.count("#define DISTAUTO_ENABLE_OTA 1") == 1
+                content = content.replace("#define DISTAUTO_ENABLE_OTA 1", "#define DISTAUTO_ENABLE_OTA 0")
+            archive.writestr(f"{sketch.parent.name}/{source.name}", content)
     with tempfile.TemporaryDirectory(prefix="distauto-headers-") as directory:
         headers = Path(directory)
         for name in HEADERS:
