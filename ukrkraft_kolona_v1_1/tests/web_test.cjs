@@ -12,7 +12,7 @@ features.startStop={close:78.5,open:78.2,rate:2000,decrement:10,reduce:false};fe
 const plan={revision:1,aa:4000,headsMl:416.67,bodyMl:3125,headsRate:400,bodyRate:4000,yieldMl:3541.67,strengthPct:96};
 const recipe={revision:2,aaMl:4000,totalPct:20,targetsMl:[83.33,125,625],rates:[4000,400,800],totalMl:833.33};
 const calls=[],storage=new Map();let presets=[],startOK=true,delayPlan=null;
-const context=vm.createContext({document:{getElementById:el,createElement:makeElement},window:{devicePixelRatio:1,addEventListener(){}},setInterval(){},setTimeout(){},URL,URLSearchParams,Blob,confirm:()=>true,localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v)},fetch:async(url,options={})=>{
+const context=vm.createContext({document:{documentElement:{dataset:{}},getElementById:el,createElement:makeElement},window:{devicePixelRatio:1,addEventListener(){}},setInterval(){},setTimeout(){},URL,URLSearchParams,Blob,confirm:()=>true,localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v)},fetch:async(url,options={})=>{
  calls.push({url,...options});const values=Object.fromEntries(new URLSearchParams(options.body));
  const ok=data=>({ok:true,json:async()=>structuredClone(data),text:async()=>typeof data==='string'?data:JSON.stringify(data)});
  if(url==='/status')return ok(status);

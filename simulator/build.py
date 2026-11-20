@@ -23,7 +23,7 @@ def build(output: Path, emxx: str):
     firmware_name = f"distauto-firmware-{version}.zip"
     html = re.search(r'R"HTML\((.*?)\)HTML"', (sketch.parent / "WebPage.h").read_text(), re.S).group(1)
     panel = (ROOT / "simulator/panel.html").read_text().replace("distauto-firmware.zip",firmware_name)
-    css = "\n.sim-panel{border:1px solid #396fa6}.sim-panel select{width:100%;padding:10px;font-size:18px;border-radius:8px;background:#111;color:#eee;border:1px solid #444;box-sizing:border-box}.sim-download{flex:1;display:flex;align-items:center;justify-content:center;color:#9ac6ff;margin-top:14px;padding:10px;text-align:center}button:disabled{opacity:.5}\n"
+    css = "\n.sim-panel{border:1px solid var(--accent)}.sim-panel select{width:100%;padding:10px;font-size:18px;border-radius:8px;background:var(--page);color:var(--text);border:1px solid var(--border);box-sizing:border-box}.sim-download{flex:1;display:flex;align-items:center;justify-content:center;color:var(--detail);margin-top:14px;padding:10px;text-align:center}button:disabled{opacity:.5}\n"
     html = html.replace("</style>", css + "</style>")
     html = html.replace("<body>", "<body>\n" + panel, 1)
     html = html.replace("<script>", f'<script src="{bridge_name}"></script>\n<script>', 1)
